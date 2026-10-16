@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>RFQ Agent settings</title>
+    <link rel="stylesheet" href="ui.css" />
+    <style>main { max-width: 520px; }</style>
+  </head>
+  <body>
+    <header><img src="icons/ferguson-logo-light.svg" alt="Ferguson" /><span>RFQ Agent · Settings</span></header>
+    <main>
+      <label>Backend URL <input id="backendUrl" placeholder="http://localhost:8000" /><small>Where the FastAPI backend runs.</small></label>
+      <label>Web app URL <input id="frontendUrl" placeholder="http://localhost:5173" /><small>Opened after sending, to follow progress.</small></label>
+      <label>API key <input id="apiKey" type="password" autocomplete="off" /><small>The API_KEY value from the backend's .env file.</small></label>
+      <div><button id="save" class="primary">Save</button> <button id="test" class="secondary">Test connection</button></div>
+      <div id="msg" class="msg" hidden></div>
+    </main>
+    <script src="settings.js"></script>
+    <script src="options.js"></script>
+  </body>
+</html>

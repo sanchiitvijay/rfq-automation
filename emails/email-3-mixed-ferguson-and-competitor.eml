@@ -1,0 +1,27 @@
+From: Priya Nair <priya.nair@sourcing.example.com>
+To: RFQ Agent <rfq-agent@example.com>
+Subject: RFQ needed: mixed list incl. competitor items
+Date: Thu, 15 Oct 2026 10:04:00 +0530
+Message-ID: <rfq-sample-3@sourcing.example.com>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+MIME-Version: 1.0
+
+Hi,
+
+Customer sent us this list. Some are ours, some are from other brands they bu=
+y today. Please build the RFQ with whatever specs you can find.
+
+Our items:
+- 5106878 (purple detector tape)
+- 5106907
+- 4570880 - water tape, silver/blue
+- 9677531
+
+Their current items (not ours):
+- Mutual Industries 17783-79-3000
+- Empire 31-024
+- MTX-4409-XQ  (customer's own code, not sure of the brand)
+
+Thanks
+Priya

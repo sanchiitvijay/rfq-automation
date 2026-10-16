@@ -1,0 +1,33 @@
+:root {
+  --ink: #0a2433; --muted: #4e575f; --primary: #1379c8; --primary-hover: #0f61a0; --navy: #00446a;
+  --surface: #fff; --surface-alt: #f0f3f5; --border: #dfe4e7; --danger: #b42318; --danger-soft: #fdecea;
+  --success: #2e7d32; --success-soft: #e7f3e8; --warn-soft: #ffedda; --warn: #7a2e0b;
+  --font: -apple-system, "system-ui", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 13px/1.45 var(--font); color: var(--ink); background: var(--surface); }
+header { display: flex; align-items: center; gap: 10px; padding: 12px 14px; background: var(--navy); color: #fff; border-top: 6px solid #03324c; }
+header img { height: 16px; width: auto; display: block; }
+header span { color: #c9d6df; font-weight: 600; padding-left: 10px; border-left: 1px solid rgba(255,255,255,.35); }
+main { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+button { font: inherit; font-weight: 600; height: 32px; padding: 0 14px; border-radius: 3px; border: 1px solid var(--primary); cursor: pointer; }
+button.primary { background: var(--primary); color: #fff; }
+button.primary:hover:not(:disabled) { background: var(--primary-hover); }
+button.secondary { background: #fff; color: var(--primary); }
+button:disabled { opacity: .55; cursor: not-allowed; }
+.msg { padding: 8px 10px; border-left: 4px solid var(--primary); background: var(--surface-alt); border-radius: 2px; }
+.msg.error { border-left-color: var(--danger); background: var(--danger-soft); }
+.msg.ok { border-left-color: var(--success); background: var(--success-soft); }
+.msg.warn { border-left-color: #ff9d35; background: var(--warn-soft); color: var(--warn); }
+ul { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 3px; }
+li { padding: 7px 10px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 8px; }
+li:last-child { border-bottom: 0; }
+li a { color: var(--ink); text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+li a:hover { color: var(--primary); }
+.status { color: var(--muted); white-space: nowrap; font-size: 12px; }
+h2 { font-size: 12px; margin: 4px 0 0; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+label { display: flex; flex-direction: column; gap: 4px; font-weight: 600; }
+input { font: inherit; font-weight: 400; height: 32px; padding: 0 10px; border: 1px solid #b2b2b2; border-radius: 2px; }
+input:focus, button:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
+small { color: var(--muted); font-weight: 400; }
+a.link { color: var(--primary); }

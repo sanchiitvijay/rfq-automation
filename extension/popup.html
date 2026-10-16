@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="ui.css" />
+    <style>body { width: 340px; }</style>
+  </head>
+  <body>
+    <header><img src="icons/ferguson-logo-light.svg" alt="Ferguson" /><span>RFQ Agent</span></header>
+    <main>
+      <button id="send" class="primary">Send this email to the RFQ Agent</button>
+      <div id="msg" class="msg" hidden></div>
+      <h2>Recent</h2>
+      <ul id="recent"><li><span class="status">Nothing sent yet</span></li></ul>
+      <a class="link" href="#" id="options">Settings</a>
+    </main>
+    <script src="settings.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

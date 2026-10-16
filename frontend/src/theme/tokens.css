@@ -1,0 +1,70 @@
+/*
+ * Ferguson design tokens: the ONLY place colours, type and spacing are defined.
+ * Re-checked against ferguson.com on 2026-10-16 (computed styles of the live site):
+ *   top utility bar  rgb(3, 50, 76)    #03324C   (.c-header__top)
+ *   main header      rgb(0, 68, 106)   #00446A   (.c-header__wrapper / .bg-brand-md)
+ *   action / links   rgb(19, 121, 200) #1379C8   (.btn-primary, search button)
+ *   text ink         rgb(10, 36, 51)   #0A2433
+ *   logo             white wordmark + symbol on the navy header (ferguson-light.svg)
+ *   type             system font stack, 600 for headings and buttons, 3px button radius
+ * TODO verify vs Brand Connect (login-gated): swap in official values here if they differ.
+ * No gradients anywhere, by design.
+ */
+:root {
+  --color-ink: #0a2433;
+  --color-ink-muted: #4e575f;
+  --color-ink-subtle: #6b7680;
+  --color-primary: #1379c8;
+  --color-primary-hover: #0f61a0;
+  --color-primary-soft: #e6f2fe;
+  --color-navy: #00446a;
+  --color-navy-deep: #03324c;
+  --color-brand: #00446a; /* main header */
+  --color-brand-dark: #03324c; /* utility bar above it */
+  --color-on-brand: #ffffff;
+  --color-on-brand-muted: #c9d6df;
+  --color-header-blue: #06307f; /* RFQ template header fill */
+  --color-surface: #ffffff;
+  --color-surface-alt: #f0f3f5;
+  --color-border: #dfe4e7;
+  --color-border-strong: #b2b2b2;
+
+  /* status: same meaning as the Excel highlighting */
+  --color-missing-bg: #d9d9d9;
+  --color-missing-ink: #3d3d3d;
+  --color-suspicious-bg: #f8cbad;
+  --color-suspicious-ink: #7a2e0b;
+  --color-notfound-bg: #fbe2d5;
+  --color-accent-orange: #ff9d35;
+  --color-accent-orange-soft: #ffedda;
+  --color-success: #2e7d32;
+  --color-success-soft: #e7f3e8;
+  --color-danger: #b42318;
+  --color-danger-soft: #fdecea;
+  --color-info-soft: #d3e9fd;
+
+  --font-sans: -apple-system, "system-ui", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+  --text-2xl: 24px;
+  --weight-regular: 400;
+  --weight-semibold: 600;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  --radius-sm: 2px;
+  --radius-md: 3px;
+  --border: 1px solid var(--color-border);
+  --focus-ring: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-primary);
+  --utility-height: 32px;
+  --header-height: 60px;
+}

@@ -1,0 +1,51 @@
+.detail-title { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.detail-title h1 { overflow-wrap: anywhere; }
+.detail-actions { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.detail-grid { display: grid; grid-template-columns: minmax(300px, 380px) minmax(0, 1fr); gap: var(--space-4); align-items: start; }
+.detail-main { min-width: 0; }
+.detail-main > .card__head { padding-bottom: 0; border-bottom: 0; }
+.email-pane { position: sticky; top: calc(var(--utility-height) + var(--header-height) + var(--space-4)); max-height: calc(100vh - var(--utility-height) - var(--header-height) - var(--space-6)); overflow: auto; }
+.email-pane .card__body { display: flex; flex-direction: column; gap: var(--space-3); }
+.email-meta { display: grid; grid-template-columns: 84px 1fr; gap: 4px var(--space-3); margin: 0; font-size: var(--text-sm); }
+.email-meta dt { color: var(--color-ink-muted); }
+.email-meta dd { margin: 0; overflow-wrap: anywhere; }
+.email-body { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-sans); font-size: var(--text-sm); line-height: 1.55; background: var(--color-surface-alt); border: var(--border); border-radius: var(--radius-sm); padding: var(--space-3); }
+.token { padding: 0 2px; border-radius: 2px; font-family: var(--font-mono); font-size: 0.95em; }
+.token--ferguson { background: var(--color-info-soft); color: var(--color-navy); }
+.token--competitor, .token--missing { background: var(--color-suspicious-bg); color: var(--color-suspicious-ink); }
+.progress-card__body { display: grid; grid-template-columns: minmax(260px, 1fr) 1fr; gap: var(--space-5); align-items: start; }
+.progress-card .progress__track { height: 8px; }
+.progress-card .progress__meta { font-size: var(--text-sm); }
+.steps { margin: 0; padding-left: var(--space-4); font-size: var(--text-sm); color: var(--color-ink-muted); }
+.summary, .activity { display: flex; flex-direction: column; gap: var(--space-5); }
+.section-title { font-size: var(--text-md); margin-bottom: var(--space-2); }
+.stats { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); border: var(--border); border-radius: var(--radius-sm); }
+.stat { display: flex; flex-direction: column; padding: var(--space-3); border-right: var(--border); }
+.stat:last-child { border-right: 0; }
+.stat__value { font-size: var(--text-xl); font-weight: var(--weight-semibold); }
+.stat__label { font-size: var(--text-xs); color: var(--color-ink-muted); }
+.stat--danger .stat__value { color: var(--color-danger); }
+.stat--warning .stat__value { color: var(--color-suspicious-ink); }
+.fill-cols { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 6px var(--space-5); }
+.fill-col { display: grid; grid-template-columns: 150px 1fr 48px; align-items: center; gap: var(--space-2); font-size: var(--text-sm); }
+.fill-col__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fill-col__track { height: 6px; background: var(--color-surface-alt); border: 1px solid var(--color-border); }
+.fill-col__bar { display: block; height: 100%; background: var(--color-navy); }
+.timeline, .notes { margin: 0; padding-left: var(--space-4); display: flex; flex-direction: column; gap: 4px; font-size: var(--text-sm); }
+.flags { display: flex; flex-direction: column; gap: var(--space-3); }
+@media (max-width: 1100px) {
+  .detail-grid { grid-template-columns: 1fr; }
+  .email-pane { position: static; max-height: none; }
+  .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .stat:nth-child(3) { border-right: 0; }
+  .stat:nth-child(-n + 3) { border-bottom: var(--border); }
+  .progress-card__body { grid-template-columns: 1fr; }
+}
+.sources { display: flex; flex-direction: column; gap: var(--space-3); }
+.sources__filters { display: flex; align-items: flex-end; gap: var(--space-3); flex-wrap: wrap; }
+.sources__filters select.input { min-width: 180px; height: 34px; }
+.sources__search { min-width: 260px; }
+.sources__value { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nowrap { white-space: nowrap; }
+.table-scroll { overflow-x: auto; }
+.sources td:nth-child(4) .subtle { max-width: 420px; overflow-wrap: anywhere; }

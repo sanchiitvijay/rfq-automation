@@ -1,0 +1,5 @@
+.send__body { min-height: 200px; font-family: var(--font-sans); font-size: var(--text-md); }
+.send__confirm { margin-top: var(--space-2); }
+.send__summary { display: grid; grid-template-columns: 120px 1fr; gap: var(--space-2) var(--space-4); margin: 0; }
+.send__summary dt { color: var(--color-ink-muted); font-size: var(--text-sm); }
+.send__summary dd { margin: 0; }

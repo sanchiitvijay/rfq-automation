@@ -1,0 +1,31 @@
+.shell { min-height: 100%; display: flex; flex-direction: column; }
+.masthead { position: sticky; top: 0; z-index: 10; }
+.utility { background: var(--color-brand-dark); color: var(--color-on-brand); font-size: var(--text-xs); }
+.utility__inner { max-width: 1440px; margin: 0 auto; height: var(--utility-height); display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); padding: 0 var(--space-5); }
+.topbar { background: var(--color-brand); color: var(--color-on-brand); }
+.topbar__inner { max-width: 1440px; margin: 0 auto; height: var(--header-height); display: flex; align-items: center; gap: var(--space-5); padding: 0 var(--space-5); }
+.brand { display: flex; align-items: center; gap: var(--space-3); color: var(--color-on-brand); }
+.brand:hover { text-decoration: none; }
+.brand__logo { display: block; height: 22px; width: auto; }
+.brand__divider { width: 1px; height: 22px; background: rgba(255, 255, 255, 0.35); }
+.brand__product { font-weight: var(--weight-semibold); font-size: var(--text-lg); letter-spacing: 0.01em; }
+.topnav { display: flex; gap: var(--space-4); }
+.topnav a { color: var(--color-on-brand-muted); font-weight: var(--weight-semibold); padding: var(--space-2) 0; }
+.topnav a:hover { color: var(--color-on-brand); text-decoration: none; }
+.topnav a.active { color: var(--color-on-brand); box-shadow: inset 0 -2px 0 var(--color-on-brand); }
+.user { margin-left: auto; }
+.user__input { width: 170px; height: 32px; font-size: var(--text-sm); border-color: transparent; }
+.health { display: flex; align-items: center; gap: var(--space-3); color: var(--color-on-brand-muted); }
+.health__item { display: inline-flex; align-items: center; gap: 5px; }
+.topbar :focus-visible, .utility :focus-visible { box-shadow: 0 0 0 2px var(--color-brand), 0 0 0 4px var(--color-on-brand); }
+.page { flex: 1; width: 100%; max-width: 1440px; margin: 0 auto; padding: var(--space-5); display: flex; flex-direction: column; gap: var(--space-4); }
+.page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap; }
+.page-head p { margin-top: var(--space-1); }
+@media (max-width: 860px) {
+  .health { display: none; }
+  .brand__divider, .brand__product { display: none; }
+  .brand__logo { height: 18px; }
+  .user__input { width: 120px; }
+  .topbar__inner, .utility__inner { padding: 0 var(--space-4); gap: var(--space-3); }
+  .page { padding: var(--space-4); }
+}

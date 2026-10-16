@@ -1,0 +1,13 @@
+__pycache__/
+.env
+.env.local
+.pytest_cache/
+.venv/
+*.egg-info/
+*.local
+*.rdb
+~$*
+frontend/dist/
+node_modules/
+out/
+venv/
