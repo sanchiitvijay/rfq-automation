@@ -187,9 +187,13 @@ async def test_delete_job(env):
 
 
 async def test_job_saved_without_queue_is_recovered_later(env):
-    from sqlalchemy import text
+    import uuid
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import update
 
     from backend.app import db
+    from backend.app.models import Job
     from backend.app import worker as worker_mod
     from backend.app.main import app
 
@@ -198,8 +202,10 @@ async def test_job_saved_without_queue_is_recovered_later(env):
     r = await client.post("/api/jobs", json={"source": "paste", "body_text": "5106912"})
     assert r.status_code == 201 and r.json()["queued"] is False and "starts automatically" in r.json()["message"]
     jid = r.json()["job_id"]
-    async with db.engine().begin() as conn:  # pretend it has been waiting for 2 minutes
-        await conn.execute(text("UPDATE jobs SET updated_at = now() - interval '2 minutes' WHERE id = :id"), {"id": jid})
+    async with db.sessions()() as s:  # pretend it has been waiting for 2 minutes
+        await s.execute(update(Job).where(Job.id == uuid.UUID(jid))
+                        .values(updated_at=datetime.now(timezone.utc) - timedelta(minutes=2)))
+        await s.commit()
     assert await worker_mod.recover_stuck_jobs({**ctx, "redis": queue}) == "requeued 1"
     await drain(queue, ctx)
     assert (await client.get(f"/api/jobs/{jid}")).json()["status"] == "needs_review"
@@ -215,3 +221,184 @@ async def test_job_queued_twice_runs_once(env):
     assert sorted([first, second]) == ["done", "skipped (already taken, finished or deleted)"]
     d = (await client.get(f"/api/jobs/{r.json()['job_id']}")).json()
     assert d["status"] == "needs_review" and d["version"] == 1
+
+
+async def test_import_preview_endpoint_then_apply(env):
+    import io
+
+    import openpyxl
+
+    client, queue, ctx, _ = env
+    jid = await make_job(client, queue, ctx, name="email-1")
+    xlsx = (await client.get(f"/api/jobs/{jid}/rfq.xlsx")).content
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx))
+    assert wb.sheetnames[0] == "RFQ"
+    ws = wb["RFQ"]
+    header = [c.value for c in ws[1]]
+    for row in ws.iter_rows(min_row=2):
+        if row[0].value == "5106880":
+            row[header.index("ANSI")].value = "ANSI Z535.1"
+            row[header.index("Weight")].value = "heavy"
+    buf = io.BytesIO()
+    wb.save(buf)
+    r = await client.post(f"/api/jobs/{jid}/sheet/import", files={"file": ("RFQ.xlsx", buf.getvalue(), "application/octet-stream")})
+    p = r.json()
+    assert r.status_code == 200 and p["ok"] and p["file_version"] == 1 and p["counts"] == {"ok": 1, "invalid": 1, "conflict": 0}
+    assert (await client.get(f"/api/jobs/{jid}")).json()["version"] == 1  # preview wrote nothing
+    ok = [c for c in p["changes"] if c["status"] == "ok"]
+    applied = await client.patch(f"/api/jobs/{jid}/sheet", json={"version": 1, "edits": [
+        {"product_id": c["product_id"], "column": c["column"], "value": c["uploaded"], "note": "Uploaded Excel 'RFQ.xlsx'"}
+        for c in ok]})
+    assert applied.status_code == 200
+    cell = next(x for x in applied.json()["rows"] if x["product_id"] == "5106880")["cells"]["ANSI"]
+    assert cell["value"] == "ANSI Z535.1" and "Uploaded Excel" in cell["source"]
+
+
+async def test_recheck_never_stores_a_report_for_an_old_version(env, monkeypatch):
+    """A slow AI check that overlaps an edit must end with a report for the newest sheet."""
+    from backend.app.services import sheet as sheet_svc
+    from rfq.quality import agent
+
+    client, queue, ctx, _ = env
+    jid = await make_job(client, queue, ctx, name="email-1")
+    s = (await client.get(f"/api/jobs/{jid}/sheet")).json()
+    pid = "5106880"
+    assert any(f["product_id"] == pid and f["column"] == "ANSI" and f["type"] == "missing" for f in s["flags"])
+
+    real = agent.run_quality
+    started = asyncio.Event()
+    calls = {"n": 0}
+
+    async def slow(sheet, opts, cache=None, llm_client=None, llm=None, progress=None, llm_cache_only=False):
+        if llm:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                started.set()
+                await asyncio.sleep(0.6)  # the AI is "thinking" while someone saves an edit
+        return await real(sheet, opts, cache, llm_client, llm=False, progress=progress)
+
+    monkeypatch.setattr(sheet_svc, "run_quality", slow)
+
+    async def edit_meanwhile():
+        await started.wait()
+        r = await client.patch(f"/api/jobs/{jid}/sheet", json={"version": 1, "edits": [
+            {"product_id": pid, "column": "ANSI", "value": "ANSI Z535.1", "note": "x"}]})
+        assert r.status_code == 200
+
+    recheck, _ = await asyncio.gather(client.post(f"/api/jobs/{jid}/recheck"), edit_meanwhile())
+    assert recheck.status_code == 200 and recheck.json()["version"] == 2 and calls["n"] == 2  # re-ran on v2
+    final = (await client.get(f"/api/jobs/{jid}/sheet")).json()
+    assert not any(f["product_id"] == pid and f["column"] == "ANSI" for f in final["flags"])  # no stale grey flag
+
+
+async def test_review_is_recorded_and_reopened_by_edits(env):
+    client, queue, ctx, _ = env
+    jid = await make_job(client, queue, ctx, name="email-1")
+    assert (await client.post(f"/api/jobs/{jid}/review?done=true&version=0")).status_code == 409  # stale view
+    assert (await client.post(f"/api/jobs/{jid}/review?done=true&version=1")).json()["status"] == "ready"
+    await client.patch(f"/api/jobs/{jid}/sheet", json={"version": 1, "edits": [
+        {"product_id": "5106880", "column": "ANSI", "value": "ANSI Z535.1"}]})
+    d = (await client.get(f"/api/jobs/{jid}")).json()
+    assert d["status"] == "needs_review"
+    phases = [e["phase"] for e in d["events"]]
+    assert "Reviewed" in phases and phases[-1] == "Review reopened"
+    assert any("by Tester" in e["message"] for e in d["events"] if e["phase"] == "Reviewed")
+
+
+async def test_mail_test_endpoint_reports_login_problem(env, monkeypatch):
+    from backend.app.services import mail
+
+    client, *_ = env
+
+    def reject(settings):
+        raise mail.PermanentSendError("mail login rejected (535): Username and Password not accepted")
+
+    monkeypatch.setattr(mail, "check_login", reject)
+    r = (await client.post("/api/mail/test")).json()
+    assert r["ok"] is False and "535" in r["detail"]
+
+
+async def test_search_filters_pagination_and_suggestions(env):
+    from datetime import datetime, timedelta, timezone
+
+    client, queue, ctx, _ = env
+    ids = {}
+    for name in ("email-1", "email-2", "email-3", "email-4"):
+        ids[name] = await make_job(client, queue, ctx, name=name)
+    r = await client.post("/api/jobs", json={"source": "paste", "subject": "100% urgent_quote", "sender": "Ann <ann@x.com>",
+                                             "body_text": "5106912"})
+    await drain(queue, ctx)
+
+    def items(resp):
+        assert resp.status_code == 200, resp.text
+        return resp.json()
+
+    all_ = items(await client.get("/api/jobs"))
+    assert all_["total"] == 5 and all_["page"] == 1 and all_["pages"] == 1
+    assert [j["subject"] for j in all_["items"]][0] == "100% urgent_quote"  # newest first
+    # free text matches subject, sender, body and product IDs
+    assert items(await client.get("/api/jobs", params={"q": "MTX-4409"}))["total"] == 1
+    assert items(await client.get("/api/jobs", params={"q": "barrier tapes"}))["total"] == 1
+    assert items(await client.get("/api/jobs", params={"product": "5106912"}))["total"] == 2
+    assert items(await client.get("/api/jobs", params={"sender": "ann@x.com"}))["total"] == 1
+    assert items(await client.get("/api/jobs", params={"subject": "fwd"}))["total"] == 1
+    # % and _ are literal characters, not wildcards
+    assert items(await client.get("/api/jobs", params={"q": "100%"}))["total"] == 1
+    assert items(await client.get("/api/jobs", params={"q": "%"}))["total"] == 1
+    assert items(await client.get("/api/jobs", params={"q": "t_pes"}))["total"] == 0
+    # status / source, repeated or comma separated
+    assert items(await client.get("/api/jobs", params={"status": "needs_review"}))["total"] == 5
+    assert items(await client.get("/api/jobs", params=[("source", "paste"), ("source", "extension")]))["total"] == 5
+    assert items(await client.get("/api/jobs", params={"source": "paste"}))["total"] == 1
+    # dates (timezone-aware), and a bad range
+    now = datetime.now(timezone.utc)
+    assert items(await client.get("/api/jobs", params={"created_from": (now - timedelta(hours=1)).isoformat()}))["total"] == 5
+    assert items(await client.get("/api/jobs", params={"created_to": (now - timedelta(days=1)).isoformat()}))["total"] == 0
+    bad = await client.get("/api/jobs", params={"created_from": now.isoformat(), "created_to": (now - timedelta(days=1)).isoformat()})
+    assert bad.status_code == 422 and "after" in bad.text
+    assert (await client.get("/api/jobs", params={"created_from": "yesterday"})).status_code == 422
+    # pagination and bounds
+    p2 = items(await client.get("/api/jobs", params={"page_size": 2, "page": 2, "sort": "oldest"}))
+    assert p2["pages"] == 3 and len(p2["items"]) == 2 and p2["page"] == 2
+    past = items(await client.get("/api/jobs", params={"page_size": 2, "page": 99}))
+    assert past["page"] == 3 and len(past["items"]) == 1  # past the end shows the last page
+    assert (await client.get("/api/jobs", params={"page_size": 1000})).status_code == 422
+    assert (await client.get("/api/jobs", params={"sort": "drop table"})).status_code == 422
+    assert (await client.get("/api/jobs", params={"status": "bogus"})).status_code == 422
+    assert (await client.get("/api/jobs", params={"q": "x" * 201})).status_code == 422
+    # facets come from the server (labels + counts), suggestions from the data
+    f = items(await client.get("/api/jobs/facets"))
+    assert {s["value"]: s["count"] for s in f["statuses"]}["needs_review"] == 5
+    assert {s["value"] for s in f["sources"]} >= {"paste", "extension"} and f["page_sizes"] and f["sorts"]
+    sug = (await client.get("/api/jobs/suggest", params={"q": "5106"})).json()
+    assert sug and all(s["field"] == "product" for s in sug) and sug[0]["value"].startswith("5106")
+    assert any(s["field"] == "sender" for s in (await client.get("/api/jobs/suggest", params={"q": "priya"})).json())
+    assert (await client.get("/api/jobs/suggest", params={"q": "a"})).json() == []  # too short
+
+
+async def test_summary_download_and_image_follows_picture(env):
+    import io
+
+    import openpyxl
+
+    client, queue, ctx, _ = env
+    jid = await make_job(client, queue, ctx, name="email-1")
+    r = await client.get(f"/api/jobs/{jid}/summary.xlsx")
+    assert r.status_code == 200 and "RFQ_summary.xlsx" in r.headers["content-disposition"]
+    wb = openpyxl.load_workbook(io.BytesIO(r.content))
+    assert wb.sheetnames == ["Summary", "Notes"]
+    assert (await client.get("/api/jobs/00000000-0000-0000-0000-000000000000/summary.xlsx")).status_code == 404
+    bad = await client.patch(f"/api/jobs/{jid}/sheet", json={"version": 1, "edits": [
+        {"product_id": "5106912", "column": "Image", "value": "https://i.ferg-img.com/i/fergusonprod/x_primary"}]})
+    assert bad.status_code == 422 and "follows Picture" in bad.text
+    ok = await client.patch(f"/api/jobs/{jid}/sheet", json={"version": 1, "edits": [
+        {"product_id": "5106912", "column": "Picture", "value": "https://i.ferg-img.com/i/fergusonprod/x_primary"}]})
+    row = next(x for x in ok.json()["rows"] if x["product_id"] == "5106912")
+    assert row["cells"]["Image"]["value"] == row["cells"]["Picture"]["value"] == "https://i.ferg-img.com/i/fergusonprod/x_primary"
+
+
+async def test_timestamps_are_utc_aware(env):
+    client, queue, ctx, _ = env
+    jid = await make_job(client, queue, ctx, name="email-1")
+    d = (await client.get(f"/api/jobs/{jid}")).json()
+    assert d["created_at"].endswith(("+00:00", "Z")) and d["events"][0]["ts"].endswith(("+00:00", "Z"))

@@ -147,3 +147,73 @@ export interface JobEvent {
   eta_seconds?: number;
   version?: number;
 }
+
+export interface ImportChange {
+  product_id: string;
+  column: string;
+  current: string;
+  uploaded: string;
+  base: string | null;
+  status: "ok" | "invalid" | "conflict";
+  message: string;
+  cell: string;
+}
+
+export interface ImportPreview {
+  ok: boolean;
+  filename: string;
+  file_job_id: string;
+  file_version: number | null;
+  current_version: number;
+  changes: ImportChange[];
+  errors: string[];
+  warnings: string[];
+  counts: { ok: number; invalid: number; conflict: number };
+}
+
+export interface JobPage {
+  items: JobSummary[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+}
+
+export interface FacetOption {
+  value: string;
+  label: string;
+  count?: number;
+}
+
+export interface Facets {
+  statuses: FacetOption[];
+  sources: FacetOption[];
+  sorts: FacetOption[];
+  page_sizes: number[];
+  default_page_size: number;
+  received: { first: string | null; last: string | null };
+  max_text: number;
+  fields: FacetOption[];
+}
+
+export interface Suggestion {
+  field: "product" | "subject" | "sender";
+  label: string;
+  value: string;
+  count: number;
+}
+
+/** Filters as they appear in the URL (all strings, empty = not set). */
+export interface JobFilters {
+  q: string;
+  subject: string;
+  sender: string;
+  product: string;
+  status: string;
+  source: string;
+  from: string; // YYYY-MM-DD, local day
+  to: string;
+  sort: string;
+  page: string;
+  size: string;
+}

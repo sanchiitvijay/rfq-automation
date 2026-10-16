@@ -43,7 +43,8 @@ class _Writer:
 def write_summary(wb: Workbook, sheet: Sheet, report: QualityReport, email_info: dict) -> None:
     if "Summary" in wb.sheetnames:
         del wb["Summary"]
-    ws = wb.create_sheet("Summary", index=0)
+    after = wb.sheetnames.index("Supplier") + 1 if "Supplier" in wb.sheetnames else 1
+    ws = wb.create_sheet("Summary", index=after)  # the RFQ itself stays the first sheet
     w = _Writer(ws)
     found = [r for r in sheet.rows if r.lookup_status != STATUS_NOT_FOUND]
     not_found = [r for r in sheet.rows if r.lookup_status == STATUS_NOT_FOUND]

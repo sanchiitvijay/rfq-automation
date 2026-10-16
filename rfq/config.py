@@ -71,6 +71,7 @@ class RunOptions:
     offline: bool = False  # catalog + PDFs only, never opens Chrome
     use_llm: bool = True  # the Quality Agent's contradiction check
     use_pdfs: bool = True
+    embed_images: bool = True  # download product thumbnails and put them in the Excel (Image column)
     cdp_url: str = field(default_factory=lambda: os.environ.get("CHROME_CDP_URL", "http://127.0.0.1:9333"))
     openai_model: str = field(default_factory=lambda: os.environ.get("OPENAI_MODEL", "gpt-5-mini"))
     live_timeout_s: float = 20.0
@@ -79,5 +80,6 @@ class RunOptions:
     ferguson_rate_per_minute: int = field(default_factory=lambda: _int_env("FERGUSON_RATE_PER_MINUTE", 12))
     serpapi_key: str = field(default_factory=lambda: (os.environ.get("SERPAPI_API_KEY")
                                                       or os.environ.get("SERPAPI_KEY") or "").strip())
+    serpapi_timeout_s: float = field(default_factory=lambda: float(_int_env("SERPAPI_TIMEOUT_S", 45)))
     # after a SerpApi hit, open the product page too? "missing" = only when the catalog lacks the product
     scrape_after_serpapi: str = field(default_factory=lambda: os.environ.get("SCRAPE_AFTER_SERPAPI", "missing"))

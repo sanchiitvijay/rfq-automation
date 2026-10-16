@@ -13,8 +13,9 @@
 .topnav a { color: var(--color-on-brand-muted); font-weight: var(--weight-semibold); padding: var(--space-2) 0; }
 .topnav a:hover { color: var(--color-on-brand); text-decoration: none; }
 .topnav a.active { color: var(--color-on-brand); box-shadow: inset 0 -2px 0 var(--color-on-brand); }
-.user { margin-left: auto; }
-.user__input { width: 170px; height: 32px; font-size: var(--text-sm); border-color: transparent; }
+.topbar__search { margin-left: auto; width: min(520px, 45vw); }
+.whoami { display: inline-flex; align-items: center; gap: var(--space-2); }
+.whoami__input { width: 170px; height: 22px; padding: 0 var(--space-2); font-size: var(--text-xs); border-color: transparent; }
 .health { display: flex; align-items: center; gap: var(--space-3); color: var(--color-on-brand-muted); }
 .health__item { display: inline-flex; align-items: center; gap: 5px; }
 .topbar :focus-visible, .utility :focus-visible { box-shadow: 0 0 0 2px var(--color-brand), 0 0 0 4px var(--color-on-brand); }
@@ -25,7 +26,8 @@
   .health { display: none; }
   .brand__divider, .brand__product { display: none; }
   .brand__logo { height: 18px; }
-  .user__input { width: 120px; }
+  .topbar__search { width: auto; flex: 1; }
+  .whoami__input { width: 120px; }
   .topbar__inner, .utility__inner { padding: 0 var(--space-4); gap: var(--space-3); }
   .page { padding: var(--space-4); }
 }

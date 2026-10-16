@@ -18,7 +18,7 @@ from rfq.pipeline import RunResult, run  # noqa: E402
 EMAILS = ROOT / "emails"
 REFERENCE = ROOT / "reference" / "email-1 reference output.xlsx"
 FIXTURES = Path(__file__).parent / "fixtures"
-OFFLINE = RunOptions(offline=True, use_llm=False, use_pdfs=False)
+OFFLINE = RunOptions(offline=True, use_llm=False, use_pdfs=False, embed_images=False)  # no network in tests
 
 
 def eml(name: str) -> bytes:

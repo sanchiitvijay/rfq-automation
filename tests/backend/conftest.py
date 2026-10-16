@@ -5,11 +5,15 @@ import os
 import sys
 from pathlib import Path
 
+import tempfile
+
+_DB = Path(tempfile.mkdtemp(prefix="rfq-test-")) / "test.sqlite3"
 os.environ.update({
-    "DATABASE_URL": "postgresql+asyncpg://localhost/rfq_test",
+    "DATABASE_URL": f"sqlite+aiosqlite:///{_DB}",
     "API_KEY": "test-key",
     "RFQ_OFFLINE": "true",
     "RFQ_USE_LLM": "false",
+    "RFQ_EMBED_IMAGES": "false",
     "BOT_EMAIL": "rfq-bot@example.com",
     "ALLOWED_RECIPIENT_DOMAINS": "",
 })
@@ -47,7 +51,8 @@ async def env(tmp_path, monkeypatch):
 
     await db.create_tables()
     async with db.engine().begin() as conn:
-        await conn.execute(text("TRUNCATE jobs, job_items, job_events, job_edits, job_sends RESTART IDENTITY CASCADE"))
+        for table in ("job_sends", "job_edits", "job_events", "job_items", "jobs"):
+            await conn.execute(text(f"DELETE FROM {table}"))
     queue = FakeQueue()
     app.state.queue, app.state.cache = queue, MemoryCache()
     ctx = {"cache": MemoryCache(), "job_try": 1}

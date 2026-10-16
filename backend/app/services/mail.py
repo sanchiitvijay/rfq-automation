@@ -48,23 +48,64 @@ def build_message(settings: Settings, sheet: Sheet, xlsx: Path, *, to: str, cc: 
     return msg
 
 
-def smtp_send(settings: Settings, msg: EmailMessage) -> str:
+def _connect(settings: Settings) -> smtplib.SMTP:
+    if settings.smtp_ssl:
+        server: smtplib.SMTP = smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=30,
+                                                context=ssl.create_default_context())
+    else:
+        server = smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30)
+    server.ehlo()
+    if settings.smtp_starttls:
+        server.starttls(context=ssl.create_default_context())
+        server.ehlo()
+    return server
+
+
+def _login(server: smtplib.SMTP, settings: Settings) -> None:
+    """One AUTH attempt only. smtplib's login() tries a second mechanism after a failure, but Gmail
+    hangs up after the first 535, so the real reason ("Username and Password not accepted") was
+    being replaced by "Connection unexpectedly closed"."""
+    password = settings.bot_password.replace(" ", "")  # Google shows App Passwords in groups of 4
+    if not password:
+        return
+    server.user, server.password = settings.bot_email, password
+    offered = (server.esmtp_features.get("auth") or "").upper().split()
+    mechanism = "PLAIN" if "PLAIN" in offered or not offered else "LOGIN"
+    method = server.auth_plain if mechanism == "PLAIN" else server.auth_login
+    try:
+        server.auth(mechanism, method, initial_response_ok=True)
+    except smtplib.SMTPAuthenticationError as e:
+        detail = e.smtp_error.decode(errors="replace") if isinstance(e.smtp_error, bytes) else str(e.smtp_error)
+        hint = (" For Gmail: BOT_PASSWORD must be a 16-letter App Password created for exactly this BOT_EMAIL "
+                "account (2-Step Verification on), not the normal password.") if "gmail" in settings.smtp_host else ""
+        raise PermanentSendError(f"mail login rejected ({e.smtp_code}): {' '.join(detail.split())[:160]}.{hint}") from e
+    except smtplib.SMTPServerDisconnected as e:
+        raise PermanentSendError("the mail server closed the connection during login; check BOT_EMAIL, "
+                                 "BOT_PASSWORD and SMTP_PORT/SMTP_SSL (Gmail: 465 + SSL, or 587 + STARTTLS)") from e
+
+
+def check_login(settings: Settings) -> str:
+    """Connects and logs in, sends nothing. Used by the 'Test mail settings' check."""
     if not settings.bot_email:
         raise PermanentSendError("BOT_EMAIL is not set in .env")
     try:
-        if settings.smtp_ssl:
-            server: smtplib.SMTP = smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=30,
-                                                    context=ssl.create_default_context())
-        else:
-            server = smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30)
-        with server:
-            if settings.smtp_starttls:
-                server.starttls(context=ssl.create_default_context())
-            if settings.bot_password:
-                server.login(settings.bot_email, settings.bot_password.replace(" ", ""))
+        server = _connect(settings)
+    except (OSError, smtplib.SMTPException) as e:
+        raise PermanentSendError(f"cannot reach {settings.smtp_host}:{settings.smtp_port} ({type(e).__name__})") from e
+    with server:
+        _login(server, settings)
+    return f"login to {settings.smtp_host}:{settings.smtp_port} as {settings.bot_email} works"
+
+
+def smtp_send(settings: Settings, msg: EmailMessage) -> str:
+    if not settings.bot_email:
+        raise PermanentSendError("BOT_EMAIL is not set in .env")
+    with _connect(settings) as server:
+        _login(server, settings)
+        try:
             server.send_message(msg)
-    except smtplib.SMTPAuthenticationError as e:
-        raise PermanentSendError("Gmail login failed: check BOT_EMAIL and BOT_PASSWORD (App Password)") from e
-    except smtplib.SMTPRecipientsRefused as e:
-        raise PermanentSendError(f"recipient refused by the mail server: {list(e.recipients)}") from e
+        except smtplib.SMTPRecipientsRefused as e:
+            raise PermanentSendError(f"recipient refused by the mail server: {list(e.recipients)}") from e
+        except smtplib.SMTPSenderRefused as e:
+            raise PermanentSendError(f"sender refused by the mail server ({e.smtp_code})") from e
     return str(msg["Message-ID"])

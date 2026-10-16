@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { ApiError } from "../../api/client";
-import { useSend, useSheet } from "../../api/hooks";
+import { useMailTest, useSend, useSheet } from "../../api/hooks";
 import type { JobDetail } from "../../api/types";
 import { Button, Field, Modal, useToast } from "../../components/ui";
 import { newKey, pct, senderAddress, senderName } from "../../lib/format";
@@ -37,6 +37,7 @@ export function SendDialog({ job, onClose }: Props) {
   const [resend, setResend] = useState(false);
   const [step, setStep] = useState<"form" | "confirm">("form");
   const [serverError, setServerError] = useState<string | null>(null);
+  const mailTest = useMailTest();
 
   const inc = sheet.data?.incomplete;
   const ccList = cc.split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
@@ -73,6 +74,16 @@ export function SendDialog({ job, onClose }: Props) {
       footer={
         step === "form" ? (
           <>
+            <Button
+              variant="ghost"
+              className="send__test"
+              busy={mailTest.isPending}
+              busyLabel="Logging in…"
+              title="Logs in to the mail server with BOT_EMAIL / BOT_PASSWORD; sends nothing"
+              onClick={() => mailTest.mutate()}
+            >
+              Test mail login
+            </Button>
             <Button variant="ghost" onClick={onClose}>
               Cancel
             </Button>
@@ -93,6 +104,16 @@ export function SendDialog({ job, onClose }: Props) {
       }
     >
       {serverError && <div className="alert alert--error">{serverError}</div>}
+      {job.error?.startsWith("Sending failed") && !serverError && (
+        <div className="alert alert--error">Last attempt: {job.error}</div>
+      )}
+      {mailTest.data && (
+        <div className={`alert ${mailTest.data.ok ? "alert--info" : "alert--error"}`}>
+          {mailTest.data.ok ? "Mail settings work: " : "Mail settings problem: "}
+          {mailTest.data.detail}
+        </div>
+      )}
+      {mailTest.isError && <div className="alert alert--error">{mailTest.error.message}</div>}
       {step === "form" ? (
         <>
           <Field label="To (point of contact)" htmlFor="send-to" error={toError} hint="Pre-filled with the person who sent the request">

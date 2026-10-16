@@ -71,6 +71,19 @@ async def unavailable(request: Request, exc: Exception) -> JSONResponse:
                                                             "Check that both are running."})
 
 
+@app.post("/api/mail/test", dependencies=[Depends(require_key)])
+async def test_mail() -> dict:
+    """Logs in to the mail server with BOT_EMAIL / BOT_PASSWORD; never sends a message."""
+    import asyncio
+
+    from backend.app.services.mail import PermanentSendError, check_login
+
+    try:
+        return {"ok": True, "detail": await asyncio.to_thread(check_login, get_settings())}
+    except PermanentSendError as e:
+        return {"ok": False, "detail": str(e)}
+
+
 @app.get("/api/health")
 async def health() -> dict:
     out = {"api": "ok", "db": "down", "redis": "down", "queue": "down", "chrome": "down"}

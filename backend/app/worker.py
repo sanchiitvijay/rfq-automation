@@ -114,7 +114,7 @@ async def run_rfq_job(ctx: dict, job_id: str) -> str:
     try:
         result = await run(job_dir(jid), options(), raw_eml=raw, text=None if raw else body, subject=subject,
                            sender=sender, progress_cb=_progress_writer(jid), cache=ctx["cache"],
-                           xlsx_name=xlsx_path(jid, 1).name)
+                           xlsx_name=xlsx_path(jid, 1).name, meta={"job_id": str(jid), "version": "1"})
     except Exception as e:
         reason = f"{type(e).__name__}: {str(e)[:400]}"
         log.exception("job %s failed", job_id)

@@ -1,17 +1,7 @@
-# Postgres + Redis for local development. The API and the worker run on the host (not in Docker),
+# Redis for local development (job queue, cache, live updates). The database is a SQLite file
+# (out/rfq.sqlite3), so no database server is needed. The API and the worker run on the host,
 # because the live ferguson.com lookup talks to your own Chrome on 127.0.0.1:9333.
 services:
-  postgres:
-    image: postgres:16
-    environment:
-      POSTGRES_DB: rfq
-      POSTGRES_USER: rfq
-      POSTGRES_PASSWORD: rfq
-    ports: ["5432:5432"]
-    volumes: [pgdata:/var/lib/postgresql/data]
   redis:
     image: redis:7
     ports: ["6379:6379"]
-volumes:
-  pgdata:
-# With this compose file use: DATABASE_URL=postgresql+asyncpg://rfq:rfq@localhost/rfq

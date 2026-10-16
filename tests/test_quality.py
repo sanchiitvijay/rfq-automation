@@ -47,7 +47,7 @@ def test_quality_agent_on_finished_workbook_keeps_values(offline_run, tmp_path):
 def test_summary_sheet_and_highlighting(offline_run):
     result = offline_run("email-2")
     wb = openpyxl.load_workbook(result.xlsx_path)
-    assert wb.sheetnames[0] == "Summary"
+    assert wb.sheetnames[0] == "RFQ" and "Summary" in wb.sheetnames  # opens on the quotation itself
     text = [str(v) for r in wb["Summary"].iter_rows(values_only=True) for v in r if v is not None]
     for heading in ("Fill rate per column", "Fill rate per product", "Not found (left blank, nothing guessed)",
                     "Missing fields (no source had a value)"):

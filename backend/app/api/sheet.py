@@ -1,18 +1,25 @@
 """Human-in-the-loop review: read the sheet, edit cells, re-run checks, mark as reviewed."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+import asyncio
+
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app import events
 from backend.app.db import get_session
 from backend.app.deps import cache, load_job
-from backend.app.models import Job
+from backend.app.models import Job, JobEvent
 from backend.app.schemas import SheetPatch
 from backend.app.security import current_user
 from backend.app.services import jobs as svc
-from backend.app.services.sheet import Conflict, Invalid, apply_patch, incomplete, recheck, sheet_payload
+from rfq.excel.importer import MAX_UPLOAD_BYTES, preview, read_meta
+from rfq.excel.reader import read as read_workbook
+from rfq.models import Sheet
+from backend.app.services.sheet import (
+    Conflict, Invalid, RecheckBusy, apply_patch, incomplete, recheck, sheet_payload,
+)
 
 router = APIRouter(prefix="/api/jobs/{job_id}", tags=["review"])
 
@@ -42,22 +49,66 @@ async def patch_sheet(patch: SheetPatch, job: Job = Depends(load_job), session: 
     return {**sheet_payload(job), "incomplete": incomplete(job)}
 
 
+@router.post("/sheet/import")
+async def import_sheet(file: UploadFile = File(...), job: Job = Depends(load_job)) -> dict:
+    """Preview what an edited, re-uploaded RFQ workbook would change. Writes nothing: the web app shows the
+    preview and applies the chosen changes through PATCH /sheet (validated and versioned)."""
+    _ready(job)
+    data = await file.read(MAX_UPLOAD_BYTES + 1)
+    current = Sheet.from_dict(job.sheet or {})
+    base = None
+    meta_version = _meta_version(data)
+    if meta_version and meta_version != job.version:
+        path = svc.xlsx_path(job.id, meta_version)
+        if path.exists():
+            base = await asyncio.to_thread(read_workbook, path)
+    result = await asyncio.to_thread(preview, data, file.filename or "upload.xlsx", str(job.id), current,
+                                     job.version, base)
+    if meta_version and meta_version != job.version and base is None:
+        result.warnings.append(f"Version {meta_version} of this RFQ is no longer stored, so the file is compared "
+                               "with the current version only.")
+    return result.to_dict()
+
+
+def _meta_version(data: bytes) -> int | None:
+    import io
+    import zipfile
+
+    from openpyxl import load_workbook
+
+    try:
+        wb = load_workbook(io.BytesIO(data), read_only=True)
+        value = read_meta(wb).get("version", "")
+        wb.close()
+        return int(value) if value.isdigit() else None
+    except (zipfile.BadZipFile, KeyError, OSError, ValueError):
+        return None
+
+
 @router.post("/recheck")
 async def recheck_sheet(job: Job = Depends(load_job), session: AsyncSession = Depends(get_session), c=Depends(cache)):
     _ready(job)
     if job.status in ("running", "sending"):
         raise HTTPException(409, f"wait until the job is not {job.status}")
-    job = await recheck(session, job, c)
+    try:
+        job = await recheck(session, job, c)
+    except RecheckBusy as e:
+        raise HTTPException(409, str(e)) from e
     await events.publish(str(job.id), {"type": "sheet", "version": job.version, "job": svc.summary(job)})
     return {**sheet_payload(job), "incomplete": incomplete(job)}
 
 
 @router.post("/review")
-async def mark_reviewed(done: bool = True, job: Job = Depends(load_job), session: AsyncSession = Depends(get_session)):
+async def mark_reviewed(done: bool = True, version: int | None = None, job: Job = Depends(load_job),
+                        session: AsyncSession = Depends(get_session), user: str = Depends(current_user)):
     _ready(job)
     if job.status not in ("needs_review", "ready"):
         raise HTTPException(409, f"cannot change review state while {job.status}")
+    if version is not None and version != job.version:  # reviewed what they saw, not a newer version
+        raise HTTPException(409, f"the RFQ changed (now version {job.version}); look at the changes, then mark it reviewed")
     job.status = "ready" if done else "needs_review"
+    session.add(JobEvent(job_id=job.id, phase="Reviewed" if done else "Review reopened",
+                         message=f"by {user} (version {job.version})"))
     await session.commit()
     await events.publish(str(job.id), {"type": "status", "job": svc.summary(job)})
     return svc.summary(job)

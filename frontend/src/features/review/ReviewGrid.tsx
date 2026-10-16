@@ -24,7 +24,7 @@ import { useMarkReviewed, usePatchSheet, useRecheck, useSheet } from "../../api/
 import type { CellEdit, Flag, JobStatus, SheetRow } from "../../api/types";
 import { Badge, Button, EmptyState, Field, Modal, useToast } from "../../components/ui";
 import { pct } from "../../lib/format";
-import { SOURCE_TYPE_LABEL, SourceLink } from "../jobs/sources";
+import { SOURCE_TYPE_LABEL, SourceLink, primaryPicture } from "../jobs/sources";
 import { tokens } from "../../theme/tokens";
 import "./review.css";
 
@@ -77,11 +77,13 @@ function toGridRows(rows: SheetRow[]): GridRow[] {
 interface Props {
   jobId: string;
   status: JobStatus;
-  onOpenSend: () => void;
+  /** "by Asha (version 3)" from the latest Reviewed event, when the RFQ is reviewed */
+  reviewedBy?: string;
+  onImport: () => void;
 }
 
 /** Excel-like editor for the RFQ sheet. Edits autosave in small batches; the server re-runs the checks. */
-export default function ReviewGrid({ jobId, status, onOpenSend }: Props) {
+export default function ReviewGrid({ jobId, status, reviewedBy, onImport }: Props) {
   const sheet = useSheet(jobId, true);
   const patch = usePatchSheet(jobId);
   const recheck = useRecheck(jobId);
@@ -97,6 +99,8 @@ export default function ReviewGrid({ jobId, status, onOpenSend }: Props) {
   const [removing, setRemoving] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [focused, setFocused] = useState<{ pid: string; col: string } | null>(null);
+  const [recheckVersion, setRecheckVersion] = useState<number | null>(null);
+  const locked = recheck.isPending || status === "sending";
   const [removeReason, setRemoveReason] = useState("");
 
   const data = sheet.data;
@@ -189,7 +193,7 @@ export default function ReviewGrid({ jobId, status, onOpenSend }: Props) {
       const def: ColDef<GridRow> = {
         field: col,
         headerName: UNITS[col] ? `${col} (${UNITS[col]})` : col,
-        editable: (p) => !READ_ONLY.has(col) && status !== "sending" && !!p.data,
+        editable: (p) => !READ_ONLY.has(col) && !locked && !!p.data,
         pinned: col === "product_id" ? "left" : undefined,
         width: col === "product_id" ? 130 : col === "Description" ? 300 : col === "Product details" ? 320 : col === "Lookup Status" ? 120 : 150,
         cellClassRules: {
@@ -210,6 +214,23 @@ export default function ReviewGrid({ jobId, status, onOpenSend }: Props) {
           return lines.join("\n");
         },
       };
+      if (col === "Image") {
+        def.hide = true; // the Excel's Image cell follows Picture, so the grid shows one picture column
+      }
+      if (col === "Picture") {
+        def.headerName = "Picture";
+        def.width = 230;
+        def.cellRenderer = (p: { value?: string }) =>
+          p.value ? (
+            <span className="pic-cell">
+              {(() => {
+                const shown = primaryPicture(p.value);
+                return shown ? <img src={`${shown}${shown.includes("?") ? "&" : "?"}fmt=jpg&w=60`} alt="" loading="lazy" /> : null;
+              })()}
+              <span className="pic-cell__url">{p.value}</span>
+            </span>
+          ) : null;
+      }
       if (col === "Lookup Status") {
         def.cellRenderer = (p: { value: string }) => (
           <Badge tone={p.value === "Not found" ? "danger" : p.value === "Manual" ? "info" : "success"}>{p.value}</Badge>
@@ -222,7 +243,7 @@ export default function ReviewGrid({ jobId, status, onOpenSend }: Props) {
       }
       return def;
     });
-  }, [data?.columns, flagMap, rowsById, status]);
+  }, [data?.columns, flagMap, rowsById, locked]);
 
   const hasIssues = useCallback(
     (row: GridRow) => {
@@ -237,6 +258,15 @@ export default function ReviewGrid({ jobId, status, onOpenSend }: Props) {
   useEffect(() => {
     gridRef.current?.onFilterChanged();
   }, [onlyIssues, hasIssues]);
+
+  const startRecheck = () => {
+    gridRef.current?.stopEditing();
+    setRecheckVersion(data?.version ?? null);
+    recheck.mutate(undefined, {
+      onError: (e) => toast(e.message, "error"),
+      onSuccess: (d) => toast(`AI re-check done for version ${d.version}: ${d.report?.llm_status ?? ""}`, "success"),
+    });
+  };
 
   if (sheet.isLoading) return <p className="muted">Loading the RFQ…</p>;
   if (sheet.isError) return <div className="alert alert--error">{sheet.error.message}</div>;
@@ -264,19 +294,40 @@ export default function ReviewGrid({ jobId, status, onOpenSend }: Props) {
           <label className="check">
             <input type="checkbox" checked={onlyIssues} onChange={(e) => setOnlyIssues(e.target.checked)} /> Only rows with issues
           </label>
-          <Button size="sm" variant="ghost" busy={recheck.isPending} onClick={() => recheck.mutate(undefined, { onError: (e) => toast(e.message, "error"), onSuccess: (d) => toast(`Checks re-run. AI: ${d.report?.llm_status ?? ""}`) })}>
+          <Button size="sm" variant="ghost" disabled={locked} onClick={onImport} title="Upload a copy you edited in Excel">
+            Upload edited Excel
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            busy={recheck.isPending}
+            busyLabel="AI checking…"
+            disabled={save !== "saved" || status === "sending"}
+            title={save !== "saved" ? "Wait until your last change is saved" : "Run the AI contradiction check again on the current version"}
+            onClick={startRecheck}
+          >
             Re-check with AI
           </Button>
-          {status === "needs_review" && (
-            <Button size="sm" variant="ghost" busy={review.isPending} onClick={() => review.mutate(true)}>
-              Mark as reviewed
-            </Button>
-          )}
-          <Button size="sm" variant="primary" disabled={save !== "saved" || status === "sending"} onClick={onOpenSend}>
-            Send to POC
-          </Button>
+          <ReviewControl
+            status={status}
+            reviewedBy={reviewedBy}
+            busy={review.isPending}
+            disabled={locked || save !== "saved"}
+            onChange={(done) =>
+              review.mutate(
+                { done, version: data.version },
+                { onError: (e) => toast(e.message, "error"), onSuccess: () => toast(done ? `Version ${data.version} marked as reviewed` : "Review reopened", "success") },
+              )
+            }
+          />
         </div>
       </div>
+      {recheck.isPending && (
+        <div className="alert alert--info" role="status">
+          The AI is re-checking version {recheckVersion ?? data.version}. Editing is paused until it finishes (usually 5–20 s), so
+          the results always match what you see.
+        </div>
+      )}
       <div className="review__note">
         <Field label="Source for your edits" htmlFor="edit-note" hint="Saved with every value you type, e.g. 'Supplier quote 16 Oct' or 'Manufacturer spec sheet'. It appears on the Sources sheet.">
           <input id="edit-note" className="input" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Where does the value come from?" maxLength={300} />
@@ -405,4 +456,37 @@ function CellInspector({ focused, rowsById, flagMap }: InspectorProps) {
       ))}
     </div>
   );
+}
+
+interface ReviewControlProps {
+  status: JobStatus;
+  reviewedBy?: string;
+  busy: boolean;
+  disabled: boolean;
+  onChange: (done: boolean) => void;
+}
+
+/** One place that says whether this version is reviewed, by whom, and offers the single next step. */
+function ReviewControl({ status, reviewedBy, busy, disabled, onChange }: ReviewControlProps) {
+  if (status === "ready") {
+    return (
+      <span className="review-state">
+        <Badge tone="success">Reviewed{reviewedBy ? ` ${reviewedBy}` : ""}</Badge>
+        <Button size="sm" variant="ghost" busy={busy} disabled={disabled} onClick={() => onChange(false)}>
+          Reopen
+        </Button>
+      </span>
+    );
+  }
+  if (status === "needs_review" || status === "sent") {
+    return (
+      <span className="review-state">
+        <Badge tone="warning">{status === "sent" ? "Sent · changes since?" : "Needs review"}</Badge>
+        <Button size="sm" variant="secondary" busy={busy} disabled={disabled || status === "sent"} onClick={() => onChange(true)}>
+          Mark reviewed
+        </Button>
+      </span>
+    );
+  }
+  return null;
 }

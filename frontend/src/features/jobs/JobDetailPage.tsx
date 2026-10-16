@@ -5,12 +5,14 @@ import { useLiveUpdates } from "../../api/events";
 import { useDeleteJob, useJob, useRetry } from "../../api/hooks";
 import { Button, Card, EmptyState, ProgressBar, Tabs, useToast } from "../../components/ui";
 import { formatTime } from "../../lib/format";
+import { ImportDialog } from "../review/ImportDialog";
 import { SendDialog } from "../send/SendDialog";
 import { ActivityLog } from "./ActivityLog";
 import { EmailPane } from "./EmailPane";
 import { FlagsTable } from "./FlagsTable";
 import { SourcesPanel } from "./SourcesPanel";
-import { SOURCE_LABEL, isActive } from "./status";
+import { isActive } from "./status";
+import { useLabels } from "./useLabels";
 import { StatusBadge } from "./StatusBadge";
 import { SummaryPanel } from "./SummaryPanel";
 import "./detail.css";
@@ -28,7 +30,9 @@ export function JobDetailPage() {
   const toast = useToast();
   const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>("summary");
+  const labels = useLabels();
   const [sending, setSending] = useState(false);
+  const [importing, setImporting] = useState(false);
 
   if (job.isLoading) return <p className="muted">Loading…</p>;
   if (job.isError || !job.data) {
@@ -43,6 +47,8 @@ export function JobDetailPage() {
   const active = isActive(j.status);
   const hasSheet = j.version > 0;
   const flags = j.report?.flags ?? [];
+  const lastReview = [...j.events].reverse().find((e) => e.phase === "Reviewed" || e.phase === "Review reopened");
+  const reviewedBy = lastReview?.phase === "Reviewed" ? `${lastReview.message} · ${formatTime(lastReview.ts)}` : undefined;
 
   return (
     <>
@@ -53,7 +59,7 @@ export function JobDetailPage() {
           </Link>
           <h1>{j.subject || "(no subject)"}</h1>
           <p className="muted">
-            {j.sender || "unknown sender"} · {SOURCE_LABEL[j.source]} · received {formatTime(j.created_at)}
+            {j.sender || "unknown sender"} · {labels.source(j.source)} · received {formatTime(j.created_at)}
           </p>
         </div>
         <div className="detail-actions">
@@ -62,6 +68,16 @@ export function JobDetailPage() {
             <a className="btn btn--secondary" href={apiUrl(`/api/jobs/${j.id}/rfq.xlsx`)} download>
               Download RFQ{j.version > 1 ? ` v${j.version}` : ""}
             </a>
+          )}
+          {hasSheet && (
+            <a className="btn btn--ghost" href={apiUrl(`/api/jobs/${j.id}/summary.xlsx`)} download title="Fill rates, what was not found and why, and every flag">
+              Download summary
+            </a>
+          )}
+          {hasSheet && (
+            <Button disabled={j.status === "sending"} onClick={() => setImporting(true)}>
+              Upload edited Excel
+            </Button>
           )}
           {hasSheet && (
             <Button variant="primary" disabled={j.status === "sending"} onClick={() => setSending(true)}>
@@ -136,7 +152,7 @@ export function JobDetailPage() {
             <SummaryPanel job={j} />
           ) : tab === "review" ? (
             <Suspense fallback={<p className="muted">Loading the editor…</p>}>
-              <ReviewGrid jobId={j.id} status={j.status} onOpenSend={() => setSending(true)} />
+              <ReviewGrid jobId={j.id} status={j.status} reviewedBy={reviewedBy} onImport={() => setImporting(true)} />
             </Suspense>
           ) : tab === "sources" ? (
             <SourcesPanel jobId={j.id} />
@@ -148,6 +164,7 @@ export function JobDetailPage() {
         </Card>
       </div>
       {sending && <SendDialog job={j} onClose={() => setSending(false)} />}
+      {importing && <ImportDialog jobId={j.id} onClose={() => setImporting(false)} />}
     </>
   );
 }

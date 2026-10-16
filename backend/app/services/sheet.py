@@ -8,12 +8,13 @@ from typing import Any
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.models import Job, JobEdit
+from backend.app.models import Job, JobEdit, JobEvent
 from backend.app.schemas import SheetPatch
 from backend.app.services.jobs import xlsx_path
 from backend.app.settings import get_settings
 from rfq.config import RFQ_COLUMNS, STATUS_FOUND, STATUS_MANUAL, STATUS_NOT_FOUND, RunOptions
 from rfq.excel.writer import render
+from rfq.pipeline import add_pictures
 from rfq.lookup.cache import Cache
 from rfq.models import Cell, QualityReport, Sheet
 from rfq.quality.agent import run_quality
@@ -34,7 +35,8 @@ class Invalid(Exception):
 
 def options() -> RunOptions:
     s = get_settings()
-    return RunOptions(offline=s.rfq_offline, use_llm=s.rfq_use_llm, cdp_url=s.chrome_cdp_url)
+    return RunOptions(offline=s.rfq_offline, use_llm=s.rfq_use_llm, cdp_url=s.chrome_cdp_url,
+                      embed_images=s.rfq_embed_images)
 
 
 def sheet_payload(job: Job) -> dict[str, Any]:
@@ -48,8 +50,12 @@ def email_info(job: Job) -> dict[str, str]:
 
 
 async def regenerate(job: Job, sheet: Sheet, report: QualityReport) -> None:
+    embed = options().embed_images
+    if embed:
+        await add_pictures(sheet)  # an edited Picture URL gets its thumbnail (cached ones are instant)
     path = xlsx_path(job.id, job.version)
-    await asyncio.to_thread(render, sheet, path, report, email_info(job))  # openpyxl is CPU-bound
+    meta = {"job_id": str(job.id), "version": str(job.version)}
+    await asyncio.to_thread(render, sheet, path, report, email_info(job), meta, embed)  # openpyxl is CPU-bound
 
 
 def _apply(sheet: Sheet, patch: SheetPatch, user: str, version: int) -> list[JobEdit]:
@@ -77,11 +83,14 @@ def _apply(sheet: Sheet, patch: SheetPatch, user: str, version: int) -> list[Job
         if old == edit.value:
             continue
         note = edit.note.strip()
+        targets = [edit.column, "Image"] if edit.column == "Picture" else [edit.column]  # Image follows Picture
         if edit.value:
             source = f"{user} on {stamp}" + (f": {note}" if note else " (no note given)")
-            row.cells[edit.column] = Cell(edit.value, "manual_edit", "high", source)
+            for column in targets:
+                row.cells[column] = Cell(edit.value, "manual_edit", "high", source)
         else:
-            row.cells.pop(edit.column, None)
+            for column in targets:
+                row.cells.pop(column, None)
         if row.lookup_status == STATUS_NOT_FOUND and row.cells:
             row.lookup_status, row.lookup_source = STATUS_MANUAL, "manual"
             sheet.add_note(row.product_id, f"Filled by hand by {user} (was Not found).")
@@ -109,6 +118,7 @@ async def apply_patch(session: AsyncSession, job: Job, patch: SheetPatch, user: 
         return job
     report = await run_quality(sheet, options(), cache, llm_cache_only=True)
 
+    reopened = job.status == "ready"
     # optimistic lock: only one writer can move the version forward
     result = await session.execute(
         update(Job).where(Job.id == job.id, Job.version == patch.version)
@@ -122,20 +132,38 @@ async def apply_patch(session: AsyncSession, job: Job, patch: SheetPatch, user: 
     for entry in log:
         entry.job_id = job.id
         session.add(entry)
+    if reopened:  # a reviewed RFQ that changes must be reviewed again; say so instead of flipping silently
+        session.add(JobEvent(job_id=job.id, phase="Review reopened", message=f"{user} edited it after the review"))
     await session.commit()
     await session.refresh(job)
     await regenerate(job, sheet, report)
     return job
 
 
-async def recheck(session: AsyncSession, job: Job, cache: Cache) -> Job:
-    """Full quality pass including the AI check (on demand from the review screen)."""
-    sheet = Sheet.from_dict(job.sheet or {})
-    report = await run_quality(sheet, options(), cache, llm=True)
-    job.report = report.to_dict()
-    await session.commit()
-    await regenerate(job, sheet, report)
-    return job
+class RecheckBusy(Exception):
+    pass
+
+
+async def recheck(session: AsyncSession, job: Job, cache: Cache, attempts: int = 3) -> Job:
+    """Full quality pass including the AI check (on demand from the review screen).
+
+    The AI call takes seconds, and someone may save an edit meanwhile. The result is only stored if the
+    sheet is still at the version it was computed for; otherwise it is computed again on the newest
+    version (rows that did not change come from the AI cache, so the retry is quick)."""
+    for _ in range(attempts):
+        await session.refresh(job)
+        version = job.version
+        sheet = Sheet.from_dict(job.sheet or {})
+        report = await run_quality(sheet, options(), cache, llm=True)
+        result = await session.execute(
+            update(Job).where(Job.id == job.id, Job.version == version)
+            .values(report=report.to_dict()).execution_options(synchronize_session=False))
+        await session.commit()
+        if result.rowcount == 1:
+            await session.refresh(job)
+            await regenerate(job, sheet, report)
+            return job
+    raise RecheckBusy("the sheet kept changing during the AI re-check; try again when edits have stopped")
 
 
 def incomplete(job: Job) -> dict[str, Any]:

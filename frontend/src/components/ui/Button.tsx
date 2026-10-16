@@ -6,9 +6,10 @@ interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: Variant;
   size?: "md" | "sm";
   busy?: boolean;
+  busyLabel?: string;
 }
 
-export function Button({ variant = "secondary", size = "md", busy, className = "", children, disabled, ...rest }: Props) {
+export function Button({ variant = "secondary", size = "md", busy, busyLabel = "Working…", className = "", children, disabled, ...rest }: Props) {
   return (
     <button
       type="button"
@@ -17,7 +18,7 @@ export function Button({ variant = "secondary", size = "md", busy, className = "
       aria-busy={busy || undefined}
       {...rest}
     >
-      {busy ? "Working…" : children}
+      {busy ? busyLabel : children}
     </button>
   );
 }

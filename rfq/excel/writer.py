@@ -18,6 +18,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 from rfq.config import (
     NOTES_COLUMNS, RFQ_COLUMNS, SOURCES_COLUMNS, STATUS_NOT_FOUND, SUPPLIER_COLUMNS, SUPPLIER_PREFIX, TEMPLATE_PATH,
 )
+from rfq.excel.images import primary_picture
 from rfq.models import Cell, QualityReport, Sheet
 
 GREY = PatternFill("solid", fgColor="D9D9D9")  # missing
@@ -25,7 +26,7 @@ ORANGE = PatternFill("solid", fgColor="F8CBAD")  # suspicious
 NOT_FOUND = PatternFill("solid", fgColor="FBE2D5")
 HEADER_FILL = PatternFill("solid", fgColor="06307F")
 HEADER_FONT = Font(bold=True, color="FFFFFF")
-SAFE_URL = re.compile(r"^https?://[^\s\"<>]+$")
+SAFE_URL = re.compile(r"^https?://[^\s\"<>|]+$")
 LINK_FONT = Font(color="1379C8", underline="single")
 LINK_COLUMNS = {"Product page", "Spec sheet"}
 
@@ -61,11 +62,20 @@ def _fill_rfq(ws: Worksheet, sheet: Sheet) -> None:
                 _put(target, row.lookup_status)
             elif column == "Image":
                 url = row.value("Image")
-                formula = _image_formula(url) if url else None
+                formula = _image_formula(primary_picture(url)) if "|" in url else (_image_formula(url) if url else None)
                 if formula:
                     target.value = formula  # our own formula, URL validated above
                 elif url:
                     _put(target, url)
+            elif column == "Picture":
+                url = row.value("Picture")
+                if SAFE_URL.match(url):
+                    _link(target, url)  # clickable; the picture itself is in the Image column
+                elif url:
+                    _put(target, url)  # e.g. several URLs separated by |: kept as written
+                    first = primary_picture(url)
+                    if first:
+                        target.hyperlink = first
             else:
                 value = row.value(column)
                 if value:
@@ -79,6 +89,39 @@ def _link(target: XlCell, url: str) -> None:
         _put(target, url)
         target.hyperlink = url
         target.font = LINK_FONT
+
+
+IMAGE_COLUMN_WIDTH = 13.0  # ~96 px, a little narrower than the 100 px picture so it covers the cell
+HIDDEN_FALLBACK = Font(color="FFFFFF")
+IMAGE_ROW_HEIGHT = 77  # points (~102 px)
+
+
+def _embed_pictures(ws: Worksheet, sheet: Sheet) -> int:
+    """Puts each product's thumbnail into its Image cell, so the picture shows in every spreadsheet app.
+    The cell keeps the =IMAGE() formula underneath (Excel 365 draws it too; the picture covers it)."""
+    from openpyxl.drawing.image import Image as XlImage
+
+    from rfq.excel import images
+
+    col = column_letter("Image")
+    embedded = 0
+    for i, row in enumerate(sheet.rows, start=2):
+        url = images.primary_picture(row.value("Picture") or row.value("Image"))
+        path = images.cached(url) if url else None
+        if path is None:
+            continue
+        pic = XlImage(str(path))
+        pic.width = pic.height = images.THUMB_PX
+        ws.add_image(pic, f"{col}{i}")
+        ws.row_dimensions[i].height = IMAGE_ROW_HEIGHT
+        # apps without IMAGE() show "0" or #NAME? for the formula: keep that text hidden under the picture
+        cell = ws[f"{col}{i}"]
+        cell.font = HIDDEN_FALLBACK
+        cell.alignment = Alignment(horizontal="left", vertical="top")
+        embedded += 1
+    if embedded:
+        ws.column_dimensions[col].width = IMAGE_COLUMN_WIDTH
+    return embedded
 
 
 def _fill_sources(ws: Worksheet, sheet: Sheet) -> None:
@@ -170,7 +213,20 @@ def _highlight(ws: Worksheet, sheet: Sheet, report: QualityReport) -> None:
         ws[flag.cell].fill = fill
 
 
-def render(sheet: Sheet, path: Path, report: QualityReport | None = None, email_info: dict | None = None) -> Path:
+META_SHEET = "_rfq_meta"
+
+
+def _write_meta(wb, meta: dict[str, str]) -> None:
+    """Hidden sheet so an edited copy that is uploaded again can be matched to its job and version."""
+    ws = wb.create_sheet(META_SHEET)
+    for i, (key, value) in enumerate(meta.items(), start=1):
+        _put(ws.cell(row=i, column=1), key)
+        _put(ws.cell(row=i, column=2), str(value))
+    ws.sheet_state = "hidden"
+
+
+def render(sheet: Sheet, path: Path, report: QualityReport | None = None, email_info: dict | None = None,
+           meta: dict[str, str] | None = None, embed_images: bool = True) -> Path:
     from rfq.quality.summary import write_summary  # summary depends on writer helpers
 
     wb = load_workbook(TEMPLATE_PATH)
@@ -184,12 +240,38 @@ def render(sheet: Sheet, path: Path, report: QualityReport | None = None, email_
         write_summary(wb, sheet, report, email_info or {})
     if "How to fill" in wb.sheetnames:  # keep the instructions sheet last
         wb.move_sheet("How to fill", offset=len(wb.sheetnames) - 1 - wb.sheetnames.index("How to fill"))
+    if meta:
+        _write_meta(wb, meta)
     ws = wb["RFQ"]
+    # open on the RFQ (the quotation itself), not on the Summary
+    for other in wb.worksheets:
+        other.sheet_view.tabSelected = other.title == "RFQ"
+    wb.active = wb.sheetnames.index("RFQ")
     ws.freeze_panes = "C2"
     for column, width in {"A": 14, "B": 42, "R": 60, "U": 14, "V": 30}.items():
         ws.column_dimensions[column].width = width
+    if embed_images:
+        _embed_pictures(ws, sheet)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp.xlsx")
     wb.save(tmp)
     tmp.replace(path)  # atomic: a reader never sees a half-written file
     return path
+
+
+def render_summary_bytes(sheet: Sheet, report: QualityReport, email_info: dict | None = None) -> bytes:
+    """A small workbook with only the Summary and the Notes (the 'download summary' button)."""
+    import io
+
+    from openpyxl import Workbook
+
+    from rfq.quality.summary import write_summary
+
+    wb = Workbook()
+    write_summary(wb, sheet, report, email_info or {})
+    del wb[wb.sheetnames[0]]  # the empty default sheet
+    _fill_notes(wb.create_sheet("Notes"), sheet)
+    wb.active = 0
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()

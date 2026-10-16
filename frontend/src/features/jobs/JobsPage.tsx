@@ -1,34 +1,26 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { ApiError } from "../../api/client";
 import { useLiveUpdates } from "../../api/events";
 import { useJobs } from "../../api/hooks";
-import type { JobStatus } from "../../api/types";
-import { Badge, Button, Card, EmptyState } from "../../components/ui";
+import { Badge, Button, Card, EmptyState, Pagination } from "../../components/ui";
 import { formatTime, pct, senderName } from "../../lib/format";
+import { FiltersPanel } from "./FiltersPanel";
 import { JobProgress } from "./JobProgress";
 import { NewJobPanel } from "./NewJobPanel";
-import { SOURCE_LABEL } from "./status";
 import { StatusBadge } from "./StatusBadge";
+import { useJobFilters } from "./useJobFilters";
+import { useLabels } from "./useLabels";
 import "./jobs.css";
 
-const FILTERS: { id: "all" | "active" | "review" | "sent" | "failed"; label: string; match: (s: JobStatus) => boolean }[] = [
-  { id: "all", label: "All", match: () => true },
-  { id: "active", label: "Processing", match: (s) => s === "queued" || s === "running" },
-  { id: "review", label: "To review", match: (s) => s === "needs_review" || s === "ready" },
-  { id: "sent", label: "Sent", match: (s) => s === "sent" || s === "sending" },
-  { id: "failed", label: "Failed", match: (s) => s === "failed" },
-];
-
 export function JobsPage() {
-  const jobs = useJobs();
+  const { filters, set, clear, active } = useJobFilters();
+  const jobs = useJobs(filters);
   const live = useLiveUpdates();
+  const labels = useLabels();
   const navigate = useNavigate();
   const [showNew, setShowNew] = useState(false);
-  const [filter, setFilter] = useState<(typeof FILTERS)[number]["id"]>("all");
-  const visible = useMemo(() => {
-    const f = FILTERS.find((x) => x.id === filter) ?? FILTERS[0]!;
-    return (jobs.data ?? []).filter((j) => f.match(j.status));
-  }, [jobs.data, filter]);
+  const page = jobs.data;
 
   return (
     <>
@@ -44,71 +36,79 @@ export function JobsPage() {
         )}
       </div>
       {showNew && <NewJobPanel onDone={() => setShowNew(false)} />}
+      <FiltersPanel filters={filters} set={set} clear={clear} active={active} />
       <Card
-        title={
-          <div className="jobs-filters" role="group" aria-label="Filter by status">
-            {FILTERS.map((f) => (
-              <button key={f.id} type="button" className="chip" aria-pressed={filter === f.id} onClick={() => setFilter(f.id)}>
-                {f.label}
-              </button>
-            ))}
-          </div>
-        }
-        actions={<span className="subtle">{live === "live" ? "Live updates" : "Refreshing every 3 s"}</span>}
+        title={<h3>{page ? `${page.total} ${page.total === 1 ? "request" : "requests"}` : "Requests"}</h3>}
+        actions={<span className="subtle">{jobs.isFetching ? "Updating…" : live === "live" ? "Live updates" : "Refreshing every 3 s"}</span>}
       >
-        {jobs.isLoading ? (
+        {filters.from && filters.to && filters.from > filters.to ? (
+          <div className="alert alert--warning">The “Received from” date is after “Received to”. Fix the dates to see results.</div>
+        ) : jobs.isLoading ? (
           <p className="muted">Loading…</p>
         ) : jobs.isError ? (
-          <div className="alert alert--error">{jobs.error.message}</div>
-        ) : visible.length === 0 ? (
-          <EmptyState title={filter === "all" ? "No requests yet" : "Nothing here"}>
-            {filter === "all" && <span>Open an RFQ email in Gmail and click the RFQ Agent extension, or use New request.</span>}
+          <div className="alert alert--error">
+            {jobs.error instanceof ApiError && jobs.error.status === 422 ? `Check the filters: ${jobs.error.message}` : jobs.error.message}
+          </div>
+        ) : !page || page.items.length === 0 ? (
+          <EmptyState title={active.length ? "No requests match these filters" : "No requests yet"}>
+            {active.length ? (
+              <Button size="sm" onClick={clear}>
+                Clear filters
+              </Button>
+            ) : (
+              <span>Open an RFQ email in Gmail and click the RFQ Agent extension, or use New request.</span>
+            )}
           </EmptyState>
         ) : (
-          <table className="table table--clickable jobs-table">
-            <thead>
-              <tr>
-                <th>Request</th>
-                <th>Status</th>
-                <th>Progress</th>
-                <th className="hide-sm">Products</th>
-                <th className="hide-sm">Fill rate</th>
-                <th className="hide-sm">Received</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visible.map((j) => (
-                <tr key={j.id} onClick={() => navigate(`/jobs/${j.id}`)} tabIndex={0} onKeyDown={(e) => e.key === "Enter" && navigate(`/jobs/${j.id}`)}>
-                  <td className="subject">
-                    <strong>{j.subject || "(no subject)"}</strong>
-                    <span className="subtle">
-                      {senderName(j.sender) || "unknown sender"} · {SOURCE_LABEL[j.source]}
-                    </span>
-                  </td>
-                  <td>
-                    <StatusBadge status={j.status} />
-                  </td>
-                  <td>
-                    <JobProgress job={j} />
-                  </td>
-                  <td className="hide-sm num">
-                    {j.requested > 0 ? (
-                      <span className="counts">
-                        <span>
-                          {j.found}/{j.requested} found
+          <>
+            <div className="table-scroll">
+              <table className={`table table--clickable jobs-table ${jobs.isPlaceholderData ? "is-stale" : ""}`}>
+                <thead>
+                  <tr>
+                    <th>Request</th>
+                    <th>Status</th>
+                    <th>Progress</th>
+                    <th className="hide-sm">Products</th>
+                    <th className="hide-sm">Fill rate</th>
+                    <th className="hide-sm">Received</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {page.items.map((j) => (
+                    <tr key={j.id} onClick={() => navigate(`/jobs/${j.id}`)} tabIndex={0} onKeyDown={(e) => e.key === "Enter" && navigate(`/jobs/${j.id}`)}>
+                      <td className="subject">
+                        <strong>{j.subject || "(no subject)"}</strong>
+                        <span className="subtle">
+                          {senderName(j.sender) || "unknown sender"} · {labels.source(j.source)}
                         </span>
-                        {j.not_found > 0 && <Badge tone="danger">{j.not_found} not found</Badge>}
-                      </span>
-                    ) : (
-                      <span className="subtle">–</span>
-                    )}
-                  </td>
-                  <td className="hide-sm num">{pct(j.fill_rate)}</td>
-                  <td className="hide-sm subtle num">{formatTime(j.created_at)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                      </td>
+                      <td>
+                        <StatusBadge status={j.status} />
+                      </td>
+                      <td>
+                        <JobProgress job={j} />
+                      </td>
+                      <td className="hide-sm num">
+                        {j.requested > 0 ? (
+                          <span className="counts">
+                            <span>
+                              {j.found}/{j.requested} found
+                            </span>
+                            {j.not_found > 0 && <Badge tone="danger">{j.not_found} not found</Badge>}
+                          </span>
+                        ) : (
+                          <span className="subtle">–</span>
+                        )}
+                      </td>
+                      <td className="hide-sm num">{pct(j.fill_rate)}</td>
+                      <td className="hide-sm subtle num">{formatTime(j.created_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <Pagination page={page.page} pages={page.pages} total={page.total} pageSize={page.page_size} onPage={(p) => set({ page: String(p) })} />
+          </>
         )}
       </Card>
     </>

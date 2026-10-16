@@ -1,12 +1,13 @@
 """Creating, listing and downloading jobs."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
+from datetime import datetime
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, Response
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app import events
@@ -15,6 +16,8 @@ from backend.app.deps import load_job, queue, queue_or_none
 from backend.app.models import Job
 from backend.app.schemas import CreateJob
 from backend.app.services import jobs as svc
+from backend.app.services import search
+from rfq.excel.writer import render_summary_bytes
 from backend.app.settings import get_settings
 from rfq.models import QualityReport, Sheet
 from rfq.reply import build_reply
@@ -85,11 +88,35 @@ async def upload_eml(file: UploadFile = File(...), session: AsyncSession = Depen
 
 
 @router.get("")
-async def list_jobs(limit: int = 50, status: str | None = None, session: AsyncSession = Depends(get_session)) -> list:
-    query = select(Job).order_by(Job.created_at.desc()).limit(max(1, min(limit, 200)))
-    if status:
-        query = query.where(Job.status == status)
-    return [svc.summary(j) for j in (await session.execute(query)).scalars()]
+async def list_jobs(
+    q: str | None = Query(None, description="free text: subject, sender, email body or product ID"),
+    subject: str | None = None, sender: str | None = None, product: str | None = None,
+    status: list[str] | None = Query(None), source: list[str] | None = Query(None),
+    created_from: datetime | None = None, created_to: datetime | None = None,
+    sort: str | None = None, page: int = Query(1, ge=1, le=100_000),
+    page_size: int = Query(search.DEFAULT_PAGE_SIZE, ge=1, le=max(search.PAGE_SIZES)),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    try:
+        filters = search.Filters.parse(q=q, subject=subject, sender=sender, product=product, status=status,
+                                       source=source, created_from=created_from, created_to=created_to, sort=sort)
+    except search.SearchError as e:
+        raise HTTPException(422, str(e)) from e
+    jobs, total, page = await search.search(session, filters, page, page_size)
+    return {"items": [svc.summary(j) for j in jobs], "total": total, "page": page, "page_size": page_size,
+            "pages": max(1, -(-total // page_size))}
+
+
+@router.get("/facets")
+async def job_facets(session: AsyncSession = Depends(get_session)) -> dict:
+    """Every filter option the jobs list offers, with labels and live counts."""
+    return await search.facets(session)
+
+
+@router.get("/suggest")
+async def job_suggest(q: str = Query("", max_length=search.MAX_TEXT), limit: int = Query(search.SUGGEST_LIMIT, ge=1, le=20),
+                      session: AsyncSession = Depends(get_session)) -> list:
+    return await search.suggest(session, q, limit)
 
 
 @router.get("/{job_id}")
@@ -126,6 +153,19 @@ async def download_xlsx(version: int | None = None, job: Job = Depends(load_job)
         raise HTTPException(404, "no RFQ file for this version yet")
     return FileResponse(path, filename="RFQ.xlsx" if v == 1 else f"RFQ_v{v}.xlsx",
                         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@router.get("/{job_id}/summary.xlsx")
+async def download_summary(job: Job = Depends(load_job)) -> Response:
+    """The Summary sheet on its own (fill rates, not-found list, flags) plus the Notes, for the current version."""
+    if not job.sheet:
+        raise HTTPException(404, "no summary yet")
+    report = QualityReport.from_dict(job.report) if job.report else QualityReport()
+    data = await asyncio.to_thread(render_summary_bytes, Sheet.from_dict(job.sheet), report,
+                                   {"subject": job.subject, "sender": job.sender})
+    name = "RFQ_summary.xlsx" if job.version <= 1 else f"RFQ_summary_v{job.version}.xlsx"
+    return Response(data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @router.get("/{job_id}/reply.eml")

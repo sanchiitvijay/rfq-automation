@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[2]
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=ROOT / ".env", extra="ignore")
 
-    database_url: str = "postgresql+asyncpg://localhost/rfq"
+    # SQLite file by default (no database server needed); any SQLAlchemy async URL works
+    database_url: str = f"sqlite+aiosqlite:///{ROOT / 'out' / 'rfq.sqlite3'}"
     redis_url: str = "redis://localhost:6379/0"
     api_key: str = "dev-key-change-me"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
@@ -22,6 +23,7 @@ class Settings(BaseSettings):
 
     rfq_offline: bool = False
     rfq_use_llm: bool = True
+    rfq_embed_images: bool = True  # product thumbnails inside the Excel
     chrome_cdp_url: str = "http://127.0.0.1:9333"
 
     smtp_host: str = "smtp.gmail.com"

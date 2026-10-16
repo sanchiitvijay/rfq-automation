@@ -7,7 +7,7 @@ from rfq.config import SPEC_COLUMNS
 from rfq.quality import units
 
 MAX_LEN = 2000
-_URL = re.compile(r"^https?://[^\s\"<>]+$")
+_URL = re.compile(r"^https?://[^\s\"<>|]+$")
 PIPE_LIST_COLUMNS = {"Application", "ASTM", "Material", "Waterworks Application", "Product details"}
 READ_ONLY = {"product_id", "Lookup Status"}
 
@@ -20,6 +20,8 @@ def validate(column: str, value: str) -> str:
     """Returns the cleaned value or raises EditError with a message for the user. '' clears the cell."""
     if column in READ_ONLY:
         raise EditError(f"{column} cannot be edited")
+    if column == "Image":
+        raise EditError("Image follows Picture: change the Picture address and the image updates with it")
     if column not in SPEC_COLUMNS:
         raise EditError(f"unknown column '{column}'")
     value = (value or "").strip()
@@ -38,9 +40,10 @@ def validate(column: str, value: str) -> str:
             raise EditError(f"enter a number with a unit, e.g. '12 {unit}'")
         return value
     if column in ("Image", "Picture"):
-        if not _URL.match(value):
-            raise EditError("enter a full web address starting with https://")
-        return value
+        parts = [p.strip() for p in value.split("|")]
+        if not parts or any(not _URL.match(p) for p in parts):
+            raise EditError("enter a full web address starting with https:// (several can be separated by |)")
+        return "|".join(parts)
     if column == "No of Tools" and not re.fullmatch(r"[1-9]\d{0,3}", value):
         raise EditError("enter a whole number, e.g. 1")
     if column == "UL Listed" and value not in ("Yes", "No"):

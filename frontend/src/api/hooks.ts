@@ -1,6 +1,8 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./client";
-import type { CellEdit, Health, JobDetail, JobSend, JobSummary, SheetData } from "./types";
+import type {
+  CellEdit, Facets, Health, ImportPreview, JobDetail, JobFilters, JobPage, JobSend, JobSummary, SheetData, Suggestion,
+} from "./types";
 
 export const keys = {
   jobs: ["jobs"] as const,
@@ -9,8 +11,51 @@ export const keys = {
   health: ["health"] as const,
 };
 
-export function useJobs() {
-  return useQuery({ queryKey: keys.jobs, queryFn: () => api<JobSummary[]>("/api/jobs?limit=100") });
+/** Local calendar day → the UTC instant where it starts / ends, so "received on 16 Oct" means your 16 Oct. */
+function dayBoundary(day: string, end: boolean): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return null;
+  const d = new Date(`${day}T${end ? "23:59:59.999" : "00:00:00"}`);
+  return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+export function jobsQueryString(f: Partial<JobFilters>): string {
+  const p = new URLSearchParams();
+  for (const k of ["q", "subject", "sender", "product", "status", "source", "sort"] as const) {
+    const v = f[k]?.trim();
+    if (v) p.set(k, v);
+  }
+  const from = f.from ? dayBoundary(f.from, false) : null;
+  const to = f.to ? dayBoundary(f.to, true) : null;
+  if (from) p.set("created_from", from);
+  if (to) p.set("created_to", to);
+  if (f.page) p.set("page", f.page);
+  if (f.size) p.set("page_size", f.size);
+  return p.toString();
+}
+
+export function useJobs(filters: Partial<JobFilters>) {
+  const qs = jobsQueryString(filters);
+  const badRange = !!(filters.from && filters.to && filters.from > filters.to); // shown inline; no request
+  return useQuery({
+    queryKey: [...keys.jobs, qs],
+    queryFn: () => api<JobPage>(`/api/jobs?${qs}`),
+    enabled: !badRange,
+    placeholderData: keepPreviousData, // keep the old page on screen while the next one loads
+  });
+}
+
+export function useFacets() {
+  return useQuery({ queryKey: ["facets"], queryFn: () => api<Facets>("/api/jobs/facets"), staleTime: 30_000 });
+}
+
+export function useSuggestions(text: string) {
+  const q = text.trim();
+  return useQuery({
+    queryKey: ["suggest", q],
+    queryFn: ({ signal }) => api<Suggestion[]>(`/api/jobs/suggest?q=${encodeURIComponent(q)}`, { signal }),
+    enabled: q.length >= 2,
+    staleTime: 15_000,
+  });
 }
 
 export function useJob(id: string) {
@@ -57,10 +102,15 @@ export function usePatchSheet(id: string) {
     mutationFn: (v: { version: number; edits: CellEdit[]; remove_rows?: { product_id: string; reason: string }[] }) =>
       api<SheetData>(`/api/jobs/${id}/sheet`, { method: "PATCH", body: JSON.stringify(v) }),
     onSuccess: (data) => {
-      qc.setQueryData(keys.sheet(id), data);
+      keepNewest(qc, id, data);
       void qc.invalidateQueries({ queryKey: keys.job(id) });
     },
   });
+}
+
+/** Never let an older response replace newer data that is already on screen. */
+function keepNewest(qc: ReturnType<typeof useQueryClient>, id: string, data: SheetData) {
+  qc.setQueryData<SheetData>(keys.sheet(id), (current) => (current && current.version > data.version ? current : data));
 }
 
 export function useRecheck(id: string) {
@@ -68,7 +118,7 @@ export function useRecheck(id: string) {
   return useMutation({
     mutationFn: () => api<SheetData>(`/api/jobs/${id}/recheck`, { method: "POST" }),
     onSuccess: (data) => {
-      qc.setQueryData(keys.sheet(id), data);
+      keepNewest(qc, id, data);
       void qc.invalidateQueries({ queryKey: keys.job(id) });
     },
   });
@@ -77,9 +127,28 @@ export function useRecheck(id: string) {
 export function useMarkReviewed(id: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (done: boolean) => api<JobSummary>(`/api/jobs/${id}/review?done=${done}`, { method: "POST" }),
+    mutationFn: (v: { done: boolean; version: number }) =>
+      api<JobSummary>(`/api/jobs/${id}/review?done=${v.done}&version=${v.version}`, { method: "POST" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.job(id) }),
+    onError: () => {
+      void qc.invalidateQueries({ queryKey: keys.job(id) });
+      void qc.invalidateQueries({ queryKey: keys.sheet(id) });
+    },
   });
+}
+
+export function useImportPreview(id: string) {
+  return useMutation({
+    mutationFn: (file: File) => {
+      const form = new FormData();
+      form.append("file", file);
+      return api<ImportPreview>(`/api/jobs/${id}/sheet/import`, { method: "POST", body: form });
+    },
+  });
+}
+
+export function useMailTest() {
+  return useMutation({ mutationFn: () => api<{ ok: boolean; detail: string }>("/api/mail/test", { method: "POST" }) });
 }
 
 export interface SendBody {

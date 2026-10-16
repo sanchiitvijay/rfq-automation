@@ -1,8 +1,9 @@
-import { useState, type ReactNode } from "react";
-import { Link, NavLink } from "react-router-dom";
+import { useEffect, useState, type ReactNode } from "react";
+import { Link, NavLink, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { getUser, setUser } from "../../api/client";
 import { useHealth } from "../../api/hooks";
 import logo from "../../assets/ferguson-logo-light.svg";
+import { SearchBox } from "../ui";
 import "./layout.css";
 
 function HealthDot({ label, ok, title }: { label: string; ok: boolean | undefined; title?: string }) {
@@ -18,6 +19,13 @@ export function AppShell({ children }: { children: ReactNode }) {
   const health = useHealth();
   const h = health.data;
   const [name, setName] = useState(getUser());
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [params] = useSearchParams();
+  const [search, setSearch] = useState(params.get("q") ?? "");
+  useEffect(() => {
+    if (location.pathname === "/") setSearch(params.get("q") ?? ""); // keep in step with the list's filters
+  }, [location.pathname, params]);
   // not configured is a choice, not a failure: grey dot, labelled "off"
   const serpOk = !h || h.serpapi === "not configured" ? undefined : h.serpapi === "ok";
   return (
@@ -25,7 +33,19 @@ export function AppShell({ children }: { children: ReactNode }) {
       <header className="masthead">
         <div className="utility">
           <div className="utility__inner">
-            <span>Sourcing · RFQ Agent</span>
+            <label className="whoami">
+              <span>Your name</span>
+              <input
+                className="input whoami__input"
+                placeholder="shown in the edit log"
+                maxLength={80}
+                value={name}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  setUser(e.target.value.trim());
+                }}
+              />
+            </label>
             <div className="health" aria-label="Service status">
               <HealthDot label="API" ok={health.isError ? false : h ? h.api === "ok" : undefined} />
               <HealthDot label="Queue" ok={h ? h.queue === "ok" && h.redis === "ok" : health.isError ? false : undefined} />
@@ -49,18 +69,20 @@ export function AppShell({ children }: { children: ReactNode }) {
                 Requests
               </NavLink>
             </nav>
-            <label className="user">
-              <span className="visually-hidden">Your name (shown in the edit log)</span>
-              <input
-                className="input user__input"
-                placeholder="Your name"
-                value={name}
-                onChange={(e) => {
-                  setName(e.target.value);
-                  setUser(e.target.value.trim());
+            <div className="topbar__search">
+              <SearchBox
+                tone="brand"
+                label="Search RFQ requests"
+                value={search}
+                onChange={setSearch}
+                placeholder="Search requests: subject, sender, product ID…"
+                onSubmit={(text) => navigate(text ? `/?q=${encodeURIComponent(text)}` : "/")}
+                onPick={(s) => {
+                  setSearch("");
+                  navigate(`/?${s.field}=${encodeURIComponent(s.value)}`);
                 }}
               />
-            </label>
+            </div>
           </div>
         </div>
       </header>

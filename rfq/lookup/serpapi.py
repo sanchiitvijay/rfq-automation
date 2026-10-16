@@ -108,8 +108,10 @@ def parse_response(data: dict[str, Any], pid: str, read_on: str | None = None) -
 
 
 class SerpApi:
-    def __init__(self, key: str, cache: Cache, client: httpx.AsyncClient | None = None) -> None:
+    def __init__(self, key: str, cache: Cache, client: httpx.AsyncClient | None = None,
+                 timeout_s: float = 45.0) -> None:
         self.key = key
+        self.timeout_s = timeout_s
         self.cache = cache
         self._client = client
         self.calls = 0
@@ -135,7 +137,8 @@ class SerpApi:
         client = self._client or httpx.AsyncClient()
         try:
             self.calls += 1
-            resp = await client.get(SERPAPI_URL, params=params, timeout=20)
+            # a fresh Google search through SerpApi can take 20-60 s; on timeout the page is read instead
+            resp = await client.get(SERPAPI_URL, params=params, timeout=self.timeout_s)
             try:
                 data = resp.json()
             except ValueError:
@@ -147,7 +150,9 @@ class SerpApi:
             else:
                 result = parse_response(data, pid)
         except httpx.HTTPError as e:
-            result = SerpResult("error", f"SerpApi not reachable ({type(e).__name__})")
+            slow = isinstance(e, httpx.TimeoutException)
+            result = SerpResult("error", f"SerpApi did not answer within {self.timeout_s:.0f} s" if slow
+                                else f"SerpApi not reachable ({type(e).__name__})")
         finally:
             if self._client is None:
                 await client.aclose()

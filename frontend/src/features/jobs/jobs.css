@@ -14,3 +14,10 @@
   .new-job__row { grid-template-columns: 1fr; }
   .jobs-table .hide-sm { display: none; }
 }
+.filters .card__body { display: flex; flex-direction: column; gap: var(--space-3); }
+.filters__top { display: grid; grid-template-columns: 1fr 180px 110px; gap: var(--space-3); align-items: end; }
+.filters__grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: var(--space-3); }
+.filters__active { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+.filter-chip { border: 0; background: none; padding: 0; cursor: pointer; }
+.jobs-table.is-stale { opacity: 0.6; transition: opacity 120ms; }
+@media (max-width: 860px) { .filters__top { grid-template-columns: 1fr 1fr; } .filters__search { grid-column: 1 / -1; } }

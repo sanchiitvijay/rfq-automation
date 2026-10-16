@@ -62,6 +62,7 @@
 .field__error { font-size: var(--text-xs); color: var(--color-danger); }
 .input, .textarea {
   width: 100%;
+  color: var(--color-ink); /* never inherit (white text inside the navy header was invisible) */
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-sm);
   background: var(--color-surface);
@@ -105,3 +106,19 @@
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--color-border-strong); }
 .dot--ok { background: var(--color-success); }
 .dot--down { background: var(--color-danger); }
+
+select.input { height: 34px; padding-right: var(--space-6); }
+.searchbox { position: relative; width: 100%; }
+.searchbox__input { height: 36px; }
+.searchbox--brand .searchbox__input { border-color: transparent; }
+.searchbox__list { position: absolute; z-index: 40; top: calc(100% + 2px); left: 0; right: 0; margin: 0; padding: var(--space-1) 0; list-style: none; background: var(--color-surface); color: var(--color-ink); border: var(--border); border-radius: var(--radius-sm); box-shadow: 0 6px 18px rgba(10, 36, 51, 0.18); max-height: 320px; overflow: auto; }
+.searchbox__option { display: grid; grid-template-columns: 92px 1fr auto; gap: var(--space-3); align-items: center; padding: 6px var(--space-3); cursor: pointer; font-size: var(--text-sm); }
+.searchbox__option[aria-selected="true"] { background: var(--color-primary-soft); }
+.searchbox__field { font-size: var(--text-xs); color: var(--color-ink-muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.searchbox__value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.searchbox__value mark { background: var(--color-accent-orange-soft); color: inherit; padding: 0; }
+.searchbox__count { font-size: var(--text-xs); color: var(--color-ink-subtle); }
+.searchbox__empty { padding: var(--space-2) var(--space-3); font-size: var(--text-sm); color: var(--color-ink-muted); }
+.pagination { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; padding-top: var(--space-3); }
+.pagination__pages { display: flex; align-items: center; gap: var(--space-1); }
+.pagination .chip:disabled { opacity: 0.45; cursor: not-allowed; }

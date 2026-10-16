@@ -107,7 +107,7 @@ def _check_utility(flags: list[Flag], n: int, row: Row) -> None:
 def _check_misc(flags: list[Flag], n: int, row: Row) -> None:
     image, picture = row.value("Image"), row.value("Picture")
     for column, url in (("Image", image), ("Picture", picture)):
-        if url and not _URL.match(url):
+        if url and not all(_URL.match(u.strip()) for u in url.split("|")):
             _flag(flags, n, row, column, "suspicious", f"'{url[:60]}' is not a web address")
     if image and picture and image != picture:
         _flag(flags, n, row, "Picture", "suspicious", "Picture URL differs from the URL in the Image formula")

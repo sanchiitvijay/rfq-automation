@@ -2,17 +2,14 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { apiUrl } from "./client";
 import { keys } from "./hooks";
-import type { JobDetail, JobEvent, JobSummary } from "./types";
+import type { JobDetail, JobEvent, JobPage, JobSummary } from "./types";
 
 const POLL_MS = 3000;
 
-function mergeSummary(list: JobSummary[] | undefined, job: JobSummary): JobSummary[] {
-  if (!list) return [job];
-  const i = list.findIndex((j) => j.id === job.id);
-  if (i === -1) return [job, ...list];
-  const next = list.slice();
-  next[i] = { ...next[i], ...job };
-  return next;
+function patchPages(qc: ReturnType<typeof useQueryClient>, jobId: string, patch: Partial<JobSummary>) {
+  qc.setQueriesData<JobPage>({ queryKey: keys.jobs }, (page) =>
+    page ? { ...page, items: page.items.map((j) => (j.id === jobId ? { ...j, ...patch } : j)) } : page,
+  );
 }
 
 /**
@@ -25,6 +22,7 @@ export function useLiveUpdates(jobId?: string): "live" | "polling" {
 
   useEffect(() => {
     let poll: number | undefined;
+    let listRefresh: number | undefined;
     const path = jobId ? `/api/jobs/${jobId}/events` : "/api/events";
     const source = new EventSource(apiUrl(path));
 
@@ -51,16 +49,22 @@ export function useLiveUpdates(jobId?: string): "live" | "polling" {
           eta_seconds: event.eta_seconds ?? null,
           status: "running" as const,
         };
-        qc.setQueryData<JobSummary[]>(keys.jobs, (list) =>
-          list?.map((j) => (j.id === event.job_id ? { ...j, ...patch } : j)),
-        );
+        patchPages(qc, event.job_id, patch);
         qc.setQueryData<JobDetail>(keys.job(event.job_id), (d) => (d ? { ...d, ...patch } : d));
         return;
       }
       if (event.job) {
         const job = event.job;
-        qc.setQueryData<JobSummary[]>(keys.jobs, (list) => mergeSummary(list, job));
+        patchPages(qc, event.job_id, job);
         qc.setQueryData<JobDetail>(keys.job(event.job_id), (d) => (d ? { ...d, ...job } : d));
+      }
+      // new jobs or status changes can move rows between pages and filters: refetch the list (debounced)
+      if (!jobId && (event.type === "created" || event.type === "status" || event.type === "done")) {
+        window.clearTimeout(listRefresh);
+        listRefresh = window.setTimeout(() => {
+          void qc.invalidateQueries({ queryKey: keys.jobs });
+          void qc.invalidateQueries({ queryKey: ["facets"] });
+        }, 400);
       }
       if (event.type === "done" || event.type === "status" || event.type === "sheet") {
         void qc.invalidateQueries({ queryKey: keys.job(event.job_id) });
@@ -88,6 +92,7 @@ export function useLiveUpdates(jobId?: string): "live" | "polling" {
     return () => {
       source.close();
       window.clearInterval(watchdog);
+      window.clearTimeout(listRefresh);
       if (poll !== undefined) window.clearInterval(poll);
     };
   }, [jobId, qc]);

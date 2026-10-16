@@ -8,6 +8,7 @@ from typing import Any
 
 from rfq.config import RunOptions
 from rfq.eta import Progress, ProgressFn
+from rfq.excel import images
 from rfq.excel.writer import render
 from rfq.extract_ids import extract
 from rfq.lookup import catalog
@@ -30,6 +31,15 @@ class RunResult:
     reply_path: Path
 
 
+async def add_pictures(sheet: Sheet) -> None:
+    """Downloads the thumbnails the workbook embeds; a picture that can't be fetched is noted, never fatal."""
+    urls = {r.product_id: images.primary_picture(r.value("Picture") or r.value("Image")) for r in sheet.rows}
+    problems = await images.prefetch([u for u in urls.values() if u])
+    for pid, url in urls.items():
+        if url in problems:
+            sheet.add_note(pid, f"Picture not embedded in the Excel: {problems[url]}. The Picture column has the link.")
+
+
 def email_info(parsed: ParsedEmail) -> dict[str, str]:
     return {"subject": parsed.subject, "sender": parsed.sender}
 
@@ -37,7 +47,7 @@ def email_info(parsed: ParsedEmail) -> dict[str, str]:
 async def run(out_dir: Path, opts: RunOptions, *, raw_eml: bytes | None = None, text: str | None = None,
               subject: str = "", sender: str = "", progress_cb: ProgressFn | None = None,
               cache: Cache | None = None, llm_client: Any | None = None,
-              xlsx_name: str = "RFQ.xlsx") -> RunResult:
+              xlsx_name: str = "RFQ.xlsx", meta: dict[str, str] | None = None) -> RunResult:
     if raw_eml is None and text is None:
         raise ValueError("run() needs raw_eml or text")
     cache = cache or MemoryCache()
@@ -72,8 +82,10 @@ async def run(out_dir: Path, opts: RunOptions, *, raw_eml: bytes | None = None, 
     report = await run_quality(sheet, opts, cache, llm_client, progress=progress)
 
     await progress.start("write", "Writing RFQ and summary")
+    if opts.embed_images:
+        await add_pictures(sheet)
     folder = out_dir
-    xlsx = render(sheet, folder / xlsx_name, report, email_info(parsed))
+    xlsx = render(sheet, folder / xlsx_name, report, email_info(parsed), meta, embed_images=opts.embed_images)
     reply = write_reply(sheet, report, xlsx, folder / "reply.eml", parsed.subject)
     await progress.finish("write")
     found = sum(1 for r in sheet.rows if r.lookup_status != "Not found")

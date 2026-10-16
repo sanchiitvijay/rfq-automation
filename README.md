@@ -4,7 +4,7 @@ Turns an RFQ request email into a filled, sourced RFQ workbook, then lets the so
 
 - **Base (Part A):** email → product IDs → **SerpApi (Google) first** → ferguson.com product page (your own Chrome, **max 12 page loads/min**) → backup catalog → spec sheet PDFs → `RFQ.xlsx` (Summary, RFQ, **Supplier**, Sources with **links**, Notes) + `reply.eml`.
 - **Agentic arm (Part B, option 2): RFQ Quality Agent.** It standardizes units, marks missing cells grey and suspicious ones orange, runs an AI contradiction check, and adds a **Summary** sheet with fill rates and a list of what was *not* found and why. It **flags only and never overwrites a value**.
-- **Product around it:** a Gmail Chrome extension, a FastAPI backend with Postgres + Redis + arq workers (jobs run in parallel), and a React web app. The web app shows each email, its live phase and the approximate time left, and has an Excel-like editor (human in the loop) and a **Send to POC** flow.
+- **Product around it:** a Gmail Chrome extension, a FastAPI backend with SQLite + Redis + arq workers (jobs run in parallel), and a React web app. The web app shows each email, its live phase and the approximate time left, and has an Excel-like editor (human in the loop) and a **Send to POC** flow.
 
 Ground rules enforced everywhere: blank means unknown, every value has a row on the Sources sheet, nothing is guessed, and every requested ID stays on the sheet (as `Not found` when needed).
 
@@ -12,7 +12,7 @@ Ground rules enforced everywhere: blank means unknown, every value has a row on 
 
 ```
 Gmail tab ──(extension: raw MIME, or visible text as fallback)──┐
-Web app ──(paste body / upload .eml)────────────────────────────┼─► FastAPI ──► Postgres (jobs, items, edits, sends)
+Web app ──(paste body / upload .eml)────────────────────────────┼─► FastAPI ──► SQLite file (jobs, items, edits, sends)
 mailbot.py ──(unchanged)──► rfq/build.py (CLI)                   │       └─► Redis queue ──► arq workers (N × 4 jobs)
                                                                  │                              │
                                                 rfq.pipeline.run()  ◄── one core for CLI, worker and (later) Azure
@@ -36,11 +36,10 @@ Web app ── edit cells (versioned, validated) → re-check → regenerate RFQ
 
 ## Setup
 
-Requirements: Python 3.11+, Node 20+, Postgres, Redis, Google Chrome. (Docker is optional: `docker compose up -d` starts Postgres and Redis.)
+Requirements: Python 3.11+, Node 20+, Redis, Google Chrome. The database is a SQLite file (`out/rfq.sqlite3`), created on first start; no database server is needed. (Docker is optional: `docker compose up -d` starts Redis.)
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-createdb rfq                        # skip if you use docker compose
 cp .env.example .env                # then fill in the values below
 (cd frontend && npm install && cp .env.example .env.local)   # put the same API key in VITE_API_KEY
 ```
@@ -52,10 +51,12 @@ cp .env.example .env                # then fill in the values below
 | `API_KEY` | Shared by the web app and the extension. Use a long random string. |
 | `SERPAPI_API_KEY` | SerpApi is tried first for every Ferguson ID. Empty, or quota used up → products are read from ferguson.com directly. |
 | `FERGUSON_RATE_PER_MINUTE` | ferguson.com page loads per minute across all workers (default 12; spec-sheet PDFs count too). |
+| `SERPAPI_TIMEOUT_S` | Seconds to wait for a SerpApi answer before reading the page instead (default 45). |
 | `SCRAPE_AFTER_SERPAPI` | After a SerpApi hit, also open the product page? `missing` (default: only when the catalog lacks the product), `always`, `never`. |
 | `OPENAI_API_KEY`, `OPENAI_MODEL` | AI contradiction check. Without a key, the code checks still run and the Summary says the AI check was skipped. |
 | `BOT_EMAIL`, `BOT_PASSWORD` | Sending the RFQ (Gmail address + 16-letter **App Password**) and `mailbot.py` |
-| `DATABASE_URL`, `REDIS_URL` | Defaults: local Postgres database `rfq`, Redis on 6379 |
+| `DATABASE_URL`, `REDIS_URL` | Defaults: the SQLite file `out/rfq.sqlite3` and Redis on 6379. Any SQLAlchemy async URL works (e.g. `postgresql+asyncpg://…`). |
+| `RFQ_EMBED_IMAGES` | Put product thumbnails inside the Excel's Image column (default true). |
 | `RFQ_OFFLINE` | `true` = catalog and spec sheets only, never opens Chrome |
 | `ALLOWED_RECIPIENT_DOMAINS` | Optional allowlist for the Send flow |
 
@@ -134,6 +135,35 @@ There is no captcha solving or fingerprint spoofing. When a lookup is blocked, t
   - sends through SMTP as a background job, in the original thread
   - a double click never sends twice (idempotency key plus an atomic status change)
 
+**Database (SQLite).** One file, `out/rfq.sqlite3`, shared by the API and the workers. It runs in WAL mode (reading never blocks writing) with a 30 s busy timeout. All the concurrency guarantees are tested on SQLite: versioned edits, double-click sends, the re-check race and jobs being claimed exactly once. Times are stored as UTC and always sent as UTC (`…Z`), so the browser shows local time. To copy data from an older Postgres setup: `pip install asyncpg && python scripts/migrate_pg_to_sqlite.py postgresql+asyncpg://localhost/rfq`. It checks row counts afterwards and refuses to overwrite a non-empty file without `--replace`.
+
+**Search, filters, pagination.** All of it runs in the database (`GET /api/jobs`).
+- **Search and filters:** free text (subject, sender, email body, product ID; every word must match), plus separate fields for Subject, Sender, Product ID, Status, Source and a received-from/to date range. Dates are your local calendar days, converted to UTC.
+- **Sorting and pages:** sort order, page size, and pages with a total count. Asking for a page past the end returns the last page.
+- **Nothing hardcoded in the UI:** `GET /api/jobs/facets` supplies every option with its label and live count (statuses, sources, sorts, page sizes).
+- **Suggestions:** the search boxes suggest subjects, senders and product IDs from the data (`GET /api/jobs/suggest`).
+- **Shareable views:** filters live in the URL, so a filtered view can be shared.
+- **Input safety:** `%`, `_` and `\` are searched literally, sort and status values are allow-listed, and text, page sizes and date ranges are validated (an inverted range is caught in the UI and rejected by the API).
+
+**Pictures in the Excel.** The template has two picture columns: **Image** (the picture) and **Picture** (its address). The download now *embeds* a thumbnail in each Image cell, so it shows in Excel, Numbers, LibreOffice and Google Sheets, not only where `IMAGE()` works. Picture is a clickable link.
+- The cell values stay as in the template, so email 1 still matches the reference.
+- In the web app they are one column: Picture, with a thumbnail. Image always follows Picture, and editing Image directly is refused.
+- Some catalog rows hold several picture addresses (`a|b`). The `_primary` one is shown and embedded, and the full value is kept.
+- Thumbnails come only from Ferguson's image CDN, with checks on type, a 3 MB size cap and a pixel cap, and are cached on disk. A picture that can't be fetched is listed in Notes, and the link remains.
+
+**Downloads.** **Download RFQ** gives the full workbook, opening on the RFQ sheet. **Download summary** gives `RFQ_summary.xlsx` with only the Summary and Notes.
+
+**Upload an edited Excel.** Download the RFQ (it opens on the RFQ sheet), edit it in Excel, then click **Upload edited Excel**. Nothing is written until you click **Apply** in the preview.
+- **File checks:** it must be an .xlsx under 10 MB, contain an RFQ sheet with all the template columns, and belong to this RFQ (a hidden `_rfq_meta` sheet stores the job ID and version).
+- **Three-way compare:** the file is compared with the version it was downloaded from. Cells someone else changed in the app since then are shown as conflicts and are not applied unless ticked.
+- **Per-cell checks:** the same rules as typing in the app (units, Yes/No, URLs, no formulas except `IMAGE()`, which Excel 365 re-saves as `_xlfn.IMAGE()`). Invalid cells are listed with the reason and never applied.
+- **Rows:** unknown products, duplicate rows and missing rows are reported, not silently applied. `product_id` and `Lookup Status` can't be changed this way.
+- **Applying:** the chosen changes go through the normal versioned edit path, with "Uploaded Excel '<file>'" plus your note as their source.
+
+**Review state.** One control shows "Needs review · Mark reviewed" or "Reviewed by <name> (version N) · Reopen". Marking as reviewed is tied to the version you're looking at. An edit after a review reopens it and logs a "Review reopened" event. **Re-check with AI** pauses editing while it runs, and its result is only stored for the version it checked: if an edit lands meanwhile, it re-runs on the newest version (unchanged rows come from the AI cache).
+
+**Mail.** "Test mail login" in the Send dialog (`POST /api/mail/test`) logs in without sending anything. Login failures are reported with the mail server's own message (for example Gmail's `535 BadCredentials`) and are not retried.
+
 **Workers.**
 - Each worker runs 4 jobs at once, and you can start more workers. A job is claimed with an atomic UPDATE, so it never runs twice.
 - A job is retried once after a crash; a send is retried 3 times. If sending fails for good (for example a bad password), the job goes back to review with the error shown.
@@ -141,7 +171,7 @@ There is no captcha solving or fingerprint spoofing. When a lookup is blocked, t
 
 ## Verification (what was run)
 
-- `pytest`: **94 passed**. Email 1 offline matches `reference/email-1 reference output.xlsx` cell by cell (RFQ sheet). The Sources sheet is identical too, plus one extra source row per product for `Description`, which the reference leaves unsourced. Emails 2–4 flag their not-found rows. The edge-case suite covers extraction, attachments, formula injection, lookup fallbacks, the Quality Agent with a failing or invalid AI answer, and the backend (auth, locking, validation, the send flow and its failures, recovery).
+- `pytest`: **115 passed** (backend tests run on a temporary SQLite file). Email 1 offline matches `reference/email-1 reference output.xlsx` cell by cell (RFQ sheet). The Sources sheet is identical too, plus one extra source row per product for `Description`, which the reference leaves unsourced. Emails 2–4 flag their not-found rows. The edge-case suite covers extraction, attachments, formula injection, lookup fallbacks, the Quality Agent with a failing or invalid AI answer, and the backend (auth, locking, validation, the send flow and its failures, recovery).
 - **Live, through Chrome on 9333**, all 4 emails. 225123 and 9677533 (not in the catalog) were found live. Pages without JSON-LD are handled. Three jobs ran at the same time with live progress over SSE.
 - **The AI check ran for real** with gpt-5-mini. It caught the Application-versus-Lettering contradiction in email 1 (5106891) and a "Non-Detectable" description with aluminium backing (9677531). Email 1 values were unchanged afterwards.
 - **Human-in-the-loop flow in the browser:**
@@ -157,8 +187,8 @@ There is no captcha solving or fingerprint spoofing. When a lookup is blocked, t
 
 ## Honest limits
 
-- **Gmail extension:** the extraction logic was tested against a mocked Gmail page and the real backend. It was not tested inside a logged-in Gmail, because Chrome does not let tools load unpacked extensions. Gmail markup changes over time; all selectors are in one place (`SELECTORS` in `extension/gmail.js`). If "Show original" can't be read, it falls back to the visible text and says that attachments were not included.
-- **SerpApi** has not been run against the real API yet: there's no key in `.env`. It is tested with recorded-shape responses and a mocked HTTP transport (hit, wrong product, truncated title, no results, quota used up, invalid key, caching). Add `SERPAPI_API_KEY` and check one live run.
+- **Gmail extension:** confirmed working in real Gmail. A job sent from a logged-in Gmail arrived with the full original message ("Show original"), and its product was found. The parsing logic is also tested against a mocked Gmail page. Gmail markup changes over time; all selectors are in one place (`SELECTORS` in `extension/gmail.js`). If "Show original" can't be read, it falls back to the visible text and says that attachments were not included.
+- **SerpApi** was verified live (Developer plan). Fresh searches often take 20–60 s, so the timeout is `SERPAPI_TIMEOUT_S` (default 45 s); after a timeout, the product page is read instead. Google does not index every Ferguson product (for example 225123, 4570880). For those, it ignores `site:` and returns unrelated pages, which the exact product-URL check rejects; the page is then read directly.
 - **Brand:** the header copies ferguson.com: the `#03324C` utility bar, the `#00446A` main header, the real white Ferguson logo (`ferguson-light.svg` from ferguson.com) and `#1379C8` actions. The extension icons come from the logo's symbol. The Brand Connect guide needs a login, so `frontend/src/theme/tokens.css` is marked *TODO verify*.
 - **Competitor part numbers** become `Not found` with the reason "not searched". The web-search competitor finder (option 1) is not in this version.
 - **Time left** is a moving average per kind of work. It starts rough and improves as jobs run; with many jobs competing for ferguson.com it can be optimistic.

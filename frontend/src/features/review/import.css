@@ -1,0 +1,4 @@
+.import__table { max-height: 46vh; overflow: auto; border: var(--border); border-radius: var(--radius-sm); }
+.import__value { max-width: 200px; overflow-wrap: anywhere; }
+.import__row--invalid td { background: var(--color-danger-soft); }
+.modal:has(.import__table) { width: min(980px, 100%); }

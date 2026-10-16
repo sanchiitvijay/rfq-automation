@@ -115,7 +115,7 @@ def _needs_page(pid: str, serp: SerpResult | None, policy: str) -> bool:
 
 async def _serp_lookups(pids: list[str], opts: RunOptions, cache: Cache, progress: Progress,
                         sheet: Sheet) -> dict[str, SerpResult]:
-    api = SerpApi(opts.serpapi_key, cache)
+    api = SerpApi(opts.serpapi_key, cache, timeout_s=opts.serpapi_timeout_s)
     ok, why = await api.enabled()
     if not ok:
         sheet.warnings.append(f"SerpApi not used ({why}); products were read from ferguson.com directly "
@@ -124,7 +124,7 @@ async def _serp_lookups(pids: list[str], opts: RunOptions, cache: Cache, progres
     progress.plan("serp", len(pids))
     await progress.start("serp", "Searching ferguson.com via SerpApi")
     results: dict[str, SerpResult] = {}
-    sem = asyncio.Semaphore(4)
+    sem = asyncio.Semaphore(8)  # SerpApi answers slowly but in parallel; its hourly limit is far above this
     async with httpx.AsyncClient() as client:
         api._client = client
 

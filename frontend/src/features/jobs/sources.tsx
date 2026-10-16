@@ -35,7 +35,13 @@ export function linkLabel(url: string): string {
 }
 
 export function isSafeUrl(url: string | undefined): url is string {
-  return !!url && /^https?:\/\/[^\s"<>]+$/.test(url);
+  return !!url && /^https?:\/\/[^\s"<>|]+$/.test(url);
+}
+
+/** Several picture URLs can be stored as "a|b": show the "_primary" one, else the first. */
+export function primaryPicture(value: string): string | null {
+  const urls = value.split("|").map((u) => u.trim()).filter(isSafeUrl);
+  return urls.find((u) => u.includes("_primary")) ?? urls[0] ?? null;
 }
 
 export function SourceLink({ cell }: { cell: SourcedCell }) {

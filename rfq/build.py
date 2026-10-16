@@ -33,6 +33,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--offline", action="store_true", help="backup catalog + spec sheets only, no Chrome")
     parser.add_argument("--no-llm", action="store_true", help="skip the AI contradiction check")
     parser.add_argument("--no-pdf", action="store_true", help="do not read spec sheet PDFs")
+    parser.add_argument("--no-images", action="store_true", help="do not embed product pictures in the Excel")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
@@ -40,7 +41,8 @@ def main(argv: list[str] | None = None) -> int:
     if not args.email.is_file():
         print(f"Email file not found: {args.email}", file=sys.stderr)
         return 2
-    opts = RunOptions(offline=args.offline, use_llm=not args.no_llm, use_pdfs=not args.no_pdf)
+    opts = RunOptions(offline=args.offline, use_llm=not args.no_llm, use_pdfs=not args.no_pdf,
+                      embed_images=not args.no_images)
 
     async def go() -> int:
         cache = await make_cache()
