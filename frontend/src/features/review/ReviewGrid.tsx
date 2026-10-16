@@ -1,6 +1,7 @@
 import {
   CellStyleModule,
   ClientSideRowModelModule,
+  CustomEditorModule,
   ExternalFilterModule,
   LargeTextEditorModule,
   ModuleRegistry,
@@ -12,9 +13,16 @@ import {
   UndoRedoEditModule,
   ValidationModule,
   themeQuartz,
+  type CellFocusedEvent,
   type CellValueChangedEvent,
   type ColDef,
+  type GetRowIdParams,
   type GridApi,
+  type GridReadyEvent,
+  type IRowNode,
+  type RowClassRules,
+  type SelectionChangedEvent,
+  type ICellRendererParams,
   type TooltipCallbackParams,
 } from "ag-grid-community";
 import { AgGridReact } from "ag-grid-react";
@@ -22,10 +30,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "../../api/client";
 import { useMarkReviewed, usePatchSheet, useRecheck, useSheet } from "../../api/hooks";
 import type { CellEdit, Flag, JobStatus, SheetRow } from "../../api/types";
-import { Badge, Button, EmptyState, Field, Modal, useToast } from "../../components/ui";
+import { Badge, Button, EmptyState, Field, Menu, Modal, useToast } from "../../components/ui";
 import { pct } from "../../lib/format";
-import { SOURCE_TYPE_LABEL, SourceLink, primaryPicture } from "../jobs/sources";
+import { SOURCE_TYPE_LABEL, SourceLink, isSafeUrl, primaryPicture } from "../jobs/sources";
 import { tokens } from "../../theme/tokens";
+import { ChoiceEditor } from "./ChoiceEditor";
 import "./review.css";
 
 // Only the grid features this editor uses (keeps the bundle small).
@@ -33,6 +42,7 @@ ModuleRegistry.registerModules([
   ClientSideRowModelModule,
   TextEditorModule,
   LargeTextEditorModule,
+  CustomEditorModule,
   UndoRedoEditModule,
   CellStyleModule,
   RowStyleModule,
@@ -54,16 +64,25 @@ const theme = themeQuartz.withParams({
   headerFontWeight: 600,
   borderRadius: 2,
   wrapperBorderRadius: 3,
-  spacing: 6,
-  rowHeight: 34,
-  headerHeight: 36,
+  spacing: 5,
+  rowHeight: 32, // = ROW_HEIGHT
+  headerHeight: 34, // = HEADER_HEIGHT
 });
 
 const READ_ONLY = new Set(["product_id", "Lookup Status"]);
+// Grid options must keep the same identity between renders: a new object makes the grid rebuild the
+// checkbox column, which re-renders every row and swallows the second click of a double-click.
+const ROW_SELECTION = { mode: "multiRow", checkboxes: true, headerCheckbox: true, enableClickSelection: false, selectAll: "filtered" } as const;
+const SELECTION_COLUMN = { pinned: "left", width: 40, suppressHeaderMenuButton: true } as const;
+// dropdown editors and tooltips open over the page, not inside the (short) grid where they'd be cut off
+const POPUP_PARENT = typeof document !== "undefined" ? document.body : null;
+const ROW_HEIGHT = 32;
+const HEADER_HEIGHT = 34;
 const SAVE_DELAY_MS = 800;
 const UNITS: Record<string, string> = { Length: "ft", Width: "in", Thickness: "mil", Weight: "lb" };
 
 type GridRow = Record<string, string> & { __pid: string };
+type View = "all" | "issues" | "missing" | "suspicious" | "not_found" | "edited";
 type SaveState = "saved" | "pending" | "saving" | "error";
 
 function toGridRows(rows: SheetRow[]): GridRow[] {
@@ -93,11 +112,11 @@ export default function ReviewGrid({ jobId, status, reviewedBy, onImport }: Prop
   const pending = useRef(new Map<string, CellEdit>());
   const timer = useRef<number | undefined>(undefined);
   const [note, setNote] = useState("");
-  const [onlyIssues, setOnlyIssues] = useState(false);
+  const [view, setView] = useState<View>("all");
   const [save, setSave] = useState<SaveState>("saved");
   const [errors, setErrors] = useState<{ product_id: string; column: string; error: string }[]>([]);
-  const [removing, setRemoving] = useState<string | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<string[] | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [focused, setFocused] = useState<{ pid: string; col: string } | null>(null);
   const [recheckVersion, setRecheckVersion] = useState<number | null>(null);
   const locked = recheck.isPending || status === "sending";
@@ -187,20 +206,27 @@ export default function ReviewGrid({ jobId, status, reviewedBy, onImport }: Prop
     [note],
   );
 
+  const options = data?.options;
+  const canEdit = !locked;
+
   const columnDefs = useMemo<ColDef<GridRow>[]>(() => {
     const cols = data?.columns ?? [];
-    return cols.map((col) => {
+    const defs = cols.map((col) => {
+      const opt = options?.[col];
+      const hasList = !!(opt?.choices?.length || opt?.suggestions?.length);
       const def: ColDef<GridRow> = {
         field: col,
         headerName: UNITS[col] ? `${col} (${UNITS[col]})` : col,
-        editable: (p) => !READ_ONLY.has(col) && !locked && !!p.data,
+        headerTooltip: opt?.choices?.length ? `Pick: ${opt.choices.join(" / ")}` : hasList ? "Type or pick a value already in use" : undefined,
+        editable: (p) => !READ_ONLY.has(col) && canEdit && !!p.data,
         pinned: col === "product_id" ? "left" : undefined,
-        width: col === "product_id" ? 130 : col === "Description" ? 300 : col === "Product details" ? 320 : col === "Lookup Status" ? 120 : 150,
+        width: col === "product_id" ? 120 : col === "Description" ? 280 : col === "Product details" ? 300 : col === "Lookup Status" ? 110 : 140,
         cellClassRules: {
           "cell--missing": (p) => !!p.data && flagMap.get(`${p.data.__pid}|${col}`)?.some((f) => f.type === "missing") === true,
           "cell--suspicious": (p) => !!p.data && flagMap.get(`${p.data.__pid}|${col}`)?.some((f) => f.type === "suspicious") === true,
           "cell--manual": (p) => !!p.data && rowsById.get(p.data.__pid)?.cells[col]?.source_type === "manual_edit",
           "cell--readonly": () => READ_ONLY.has(col),
+          "cell--choice": () => hasList && canEdit,
         },
         tooltip: (p: TooltipCallbackParams<GridRow>) => {
           if (!p.data) return "";
@@ -214,12 +240,18 @@ export default function ReviewGrid({ jobId, status, reviewedBy, onImport }: Prop
           return lines.join("\n");
         },
       };
+      if (hasList) {
+        def.cellEditor = ChoiceEditor;
+        def.cellEditorPopup = true;
+        def.cellEditorPopupPosition = "under";
+        def.cellEditorParams = { choices: opt?.choices, suggestions: opt?.suggestions, unit: UNITS[col] };
+      }
       if (col === "Image") {
         def.hide = true; // the Excel's Image cell follows Picture, so the grid shows one picture column
       }
       if (col === "Picture") {
         def.headerName = "Picture";
-        def.width = 230;
+        def.width = 210;
         def.cellRenderer = (p: { value?: string }) =>
           p.value ? (
             <span className="pic-cell">
@@ -243,21 +275,94 @@ export default function ReviewGrid({ jobId, status, reviewedBy, onImport }: Prop
       }
       return def;
     });
-  }, [data?.columns, flagMap, rowsById, locked]);
+    defs.push({
+      colId: "__actions",
+      headerName: "",
+      pinned: "right",
+      width: 48,
+      resizable: false,
+      sortable: false,
+      suppressMovable: true,
+      cellClass: "cell--actions",
+      cellRenderer: (p: ICellRendererParams<GridRow>) =>
+        p.data ? (
+          <RowActions
+            row={rowsById.get(p.data.__pid)}
+            disabled={!canEdit}
+            onRemove={() => setRemoving([p.data!.__pid])}
+          />
+        ) : null,
+    });
+    return defs;
+  }, [data?.columns, options, flagMap, rowsById, canEdit]);
 
-  const hasIssues = useCallback(
+  const counts = useMemo(() => {
+    const flags = data?.flags ?? [];
+    const rows = data?.rows ?? [];
+    const has = (pid: string, t: string) => flags.some((f) => f.product_id === pid && f.type === t);
+    return {
+      all: rows.length,
+      issues: rows.filter((r) => r.lookup_status === "Not found" || flags.some((f) => f.product_id === r.product_id)).length,
+      missing: rows.filter((r) => has(r.product_id, "missing")).length,
+      suspicious: rows.filter((r) => has(r.product_id, "suspicious")).length,
+      not_found: rows.filter((r) => r.lookup_status === "Not found").length,
+      edited: rows.filter((r) => Object.values(r.cells).some((c) => c.source_type === "manual_edit")).length,
+    } satisfies Record<View, number>;
+  }, [data?.flags, data?.rows]);
+
+  const passes = useCallback(
     (row: GridRow) => {
       const r = rowsById.get(row.__pid);
       if (!r) return false;
-      if (r.lookup_status === "Not found") return true;
-      return (data?.flags ?? []).some((f) => f.product_id === r.product_id);
+      const flags = (data?.flags ?? []).filter((f) => f.product_id === r.product_id);
+      switch (view) {
+        case "issues":
+          return r.lookup_status === "Not found" || flags.length > 0;
+        case "missing":
+        case "suspicious":
+          return flags.some((f) => f.type === view);
+        case "not_found":
+          return r.lookup_status === "Not found";
+        case "edited":
+          return Object.values(r.cells).some((c) => c.source_type === "manual_edit");
+        default:
+          return true;
+      }
     },
-    [data?.flags, rowsById],
+    [data?.flags, rowsById, view],
   );
 
   useEffect(() => {
     gridRef.current?.onFilterChanged();
-  }, [onlyIssues, hasIssues]);
+  }, [passes]);
+
+  // rows that disappear (removed, or by someone else) must not stay "selected" behind the scenes
+  useEffect(() => {
+    setSelectedIds((ids) => ids.filter((id) => rowsById.has(id)));
+  }, [rowsById]);
+
+  // Every prop handed to the grid keeps its identity between renders (useCallback/useMemo): a new
+  // function or object makes the grid refresh its rows, which swallows the second click of a double-click.
+  const getRowId = useCallback((p: GetRowIdParams<GridRow>) => p.data.__pid, []);
+  const onGridReady = useCallback((e: GridReadyEvent<GridRow>) => {
+    gridRef.current = e.api;
+  }, []);
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const passesRef = useRef(passes);
+  passesRef.current = passes;
+  const isFilterPresent = useCallback(() => viewRef.current !== "all", []);
+  const doesFilterPass = useCallback((node: IRowNode<GridRow>) => !!node.data && passesRef.current(node.data), []);
+  const rowClassRules = useMemo<RowClassRules<GridRow>>(
+    () => ({ "row--notfound": (p) => !!p.data && rowsById.get(p.data.__pid)?.lookup_status === "Not found" }),
+    [rowsById],
+  );
+  const onSelectionChanged = useCallback((e: SelectionChangedEvent<GridRow>) => setSelectedIds(e.api.getSelectedRows().map((r) => r.__pid)), []);
+  const onCellFocused = useCallback((e: CellFocusedEvent<GridRow>) => {
+    const col = typeof e.column === "object" && e.column ? e.column.getColId() : null;
+    const node = e.rowIndex !== null && e.rowIndex !== undefined ? e.api.getDisplayedRowAtIndex(e.rowIndex) : null;
+    if (col && !col.startsWith("__") && col !== "ag-Grid-SelectionColumn" && node?.data) setFocused({ pid: node.data.__pid, col });
+  }, []);
 
   const startRecheck = () => {
     gridRef.current?.stopEditing();
@@ -268,20 +373,47 @@ export default function ReviewGrid({ jobId, status, reviewedBy, onImport }: Prop
     });
   };
 
+  const removeRows = (ids: string[]) => {
+    gridRef.current?.stopEditing();
+    patch.mutate(
+      { version: versionRef.current, edits: [], remove_rows: ids.map((product_id) => ({ product_id, reason: removeReason.trim() })) },
+      {
+        onSuccess: (next) => {
+          versionRef.current = next.version;
+          setRemoving(null);
+          setRemoveReason("");
+          gridRef.current?.deselectAll();
+          toast(ids.length === 1 ? `${ids[0]} removed` : `${ids.length} rows removed`, "success");
+        },
+        onError: (e) =>
+          toast(e instanceof ApiError && e.status === 409 ? "Someone else changed this RFQ; the latest version is loaded. Try again." : e.message, "error"),
+      },
+    );
+  };
+
   if (sheet.isLoading) return <p className="muted">Loading the RFQ…</p>;
   if (sheet.isError) return <div className="alert alert--error">{sheet.error.message}</div>;
-  if (!data || data.rows.length === 0) return <EmptyState title="No products to review">The email had no product IDs.</EmptyState>;
+  if (!data || data.rows.length === 0) return <EmptyState title="No products to review">The email had no product IDs, or every row was removed.</EmptyState>;
 
   const inc = data.incomplete;
   const missingCount = Object.values(inc.missing).reduce((n, cols) => n + cols.length, 0);
-  const saveLabel = { saved: `Saved · version ${data.version}`, pending: "Unsaved changes…", saving: "Saving…", error: "Last change was not saved" }[save];
+  const saveLabel = { saved: `Saved · v${data.version}`, pending: "Unsaved changes…", saving: "Saving…", error: "Last change not saved" }[save];
+  const viewLabels: Record<View, string> = {
+    all: "All rows",
+    issues: "Rows with issues",
+    missing: "Missing values",
+    suspicious: "Values to check",
+    not_found: "Not found",
+    edited: "Edited by hand",
+  };
+  const removeAll = removing !== null && removing.length >= data.rows.length;
 
   return (
     <div className="review">
       <div className="review__bar">
         <div className="review__stats">
-          <span>
-            Fill rate <strong className="num">{pct(data.report?.fill_overall)}</strong>
+          <span className="review__fill">
+            Fill <strong className="num">{pct(data.report?.fill_overall)}</strong>
           </span>
           <Badge tone="danger">{inc.not_found.length} not found</Badge>
           <Badge tone="missing">{missingCount} missing</Badge>
@@ -291,12 +423,6 @@ export default function ReviewGrid({ jobId, status, reviewedBy, onImport }: Prop
           </span>
         </div>
         <div className="review__actions">
-          <label className="check">
-            <input type="checkbox" checked={onlyIssues} onChange={(e) => setOnlyIssues(e.target.checked)} /> Only rows with issues
-          </label>
-          <Button size="sm" variant="ghost" disabled={locked} onClick={onImport} title="Upload a copy you edited in Excel">
-            Upload edited Excel
-          </Button>
           <Button
             size="sm"
             variant="ghost"
@@ -322,17 +448,50 @@ export default function ReviewGrid({ jobId, status, reviewedBy, onImport }: Prop
           />
         </div>
       </div>
+      <div className="review__tools">
+        <div className="review__show">
+          <label className="field__label" htmlFor="grid-view">Show</label>
+          <select id="grid-view" className="input input--sm" value={view} onChange={(e) => setView(e.target.value as View)}>
+            {(Object.keys(viewLabels) as View[]).map((v) => (
+              <option key={v} value={v} disabled={v !== "all" && counts[v] === 0}>
+                {viewLabels[v]} ({counts[v]})
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="review__note">
+          <label className="field__label" htmlFor="edit-note">Source for your edits</label>
+          <input id="edit-note" className="input input--sm" value={note} onChange={(e) => setNote(e.target.value)} maxLength={300}
+                 placeholder="e.g. Supplier quote 16 Oct (saved on the Sources sheet)" />
+        </div>
+        <Menu
+          label="More"
+          size="sm"
+          variant="ghost"
+          width={280}
+          sections={[
+            {
+              items: [
+                { key: "import", label: "Upload edited file…", description: ".xlsx, .xls or .csv; checked before anything changes", disabled: locked, onSelect: onImport },
+                {
+                  key: "remove-sel",
+                  label: selectedIds.length ? `Remove ${selectedIds.length} selected row${selectedIds.length > 1 ? "s" : ""}…` : "Remove selected rows…",
+                  description: selectedIds.length ? undefined : "Tick rows on the left first",
+                  danger: true,
+                  disabled: !selectedIds.length || locked,
+                  onSelect: () => setRemoving(selectedIds),
+                },
+              ],
+            },
+          ]}
+        />
+      </div>
       {recheck.isPending && (
         <div className="alert alert--info" role="status">
           The AI is re-checking version {recheckVersion ?? data.version}. Editing is paused until it finishes (usually 5–20 s), so
           the results always match what you see.
         </div>
       )}
-      <div className="review__note">
-        <Field label="Source for your edits" htmlFor="edit-note" hint="Saved with every value you type, e.g. 'Supplier quote 16 Oct' or 'Manufacturer spec sheet'. It appears on the Sources sheet.">
-          <input id="edit-note" className="input" value={note} onChange={(e) => setNote(e.target.value)} placeholder="Where does the value come from?" maxLength={300} />
-        </Field>
-      </div>
       {errors.length > 0 && (
         <div className="alert alert--error">
           {errors.map((e, i) => (
@@ -342,82 +501,128 @@ export default function ReviewGrid({ jobId, status, reviewedBy, onImport }: Prop
           ))}
         </div>
       )}
-      <div className="review__legend subtle">
-        <span><i className="swatch swatch--missing" /> missing</span>
-        <span><i className="swatch swatch--suspicious" /> check this value</span>
-        <span><i className="swatch swatch--manual" /> edited by hand</span>
-        <span>Hover a cell for its source and the reason it was flagged. Double-click to edit; Ctrl+Z undoes.</span>
-      </div>
-      <div className="review__grid">
+      {selectedIds.length > 0 && (
+        <div className="review__selection" role="status">
+          <strong>{selectedIds.length}</strong> selected
+          <Button size="sm" variant="danger" disabled={locked} onClick={() => setRemoving(selectedIds)}>
+            Remove {selectedIds.length === 1 ? "row" : `${selectedIds.length} rows`}…
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => gridRef.current?.deselectAll()}>
+            Clear selection
+          </Button>
+        </div>
+      )}
+      {/* as tall as its rows (plus a horizontal scrollbar), capped by the CSS max-height for long RFQs */}
+      <div className="review__grid" style={{ height: HEADER_HEIGHT + Math.max(data.rows.length, 3) * ROW_HEIGHT + 20 }}>
         <AgGridReact<GridRow>
           theme={theme}
           rowData={rowData}
           columnDefs={columnDefs}
-          getRowId={(p) => p.data.__pid}
-          onGridReady={(e) => (gridRef.current = e.api)}
+          getRowId={getRowId}
+          onGridReady={onGridReady}
           onCellValueChanged={onCellValueChanged}
-          isExternalFilterPresent={() => onlyIssues}
-          doesExternalFilterPass={(node) => !!node.data && hasIssues(node.data)}
-          rowClassRules={{ "row--notfound": (p) => !!p.data && rowsById.get(p.data.__pid)?.lookup_status === "Not found" }}
+          isExternalFilterPresent={isFilterPresent}
+          doesExternalFilterPass={doesFilterPass}
+          rowClassRules={rowClassRules}
           undoRedoCellEditing
           stopEditingWhenCellsLoseFocus
           tooltipShowDelay={300}
           enableCellTextSelection
-          rowSelection={{ mode: "singleRow", checkboxes: false, enableClickSelection: true }}
-          onSelectionChanged={(e) => setSelectedId(e.api.getSelectedRows()[0]?.__pid ?? null)}
-          onCellFocused={(e) => {
-            const col = typeof e.column === "object" && e.column ? e.column.getColId() : null;
-            const node = e.rowIndex !== null && e.rowIndex !== undefined ? e.api.getDisplayedRowAtIndex(e.rowIndex) : null;
-            if (col && node?.data) setFocused({ pid: node.data.__pid, col });
-          }}
+          rowSelection={ROW_SELECTION}
+          selectionColumnDef={SELECTION_COLUMN}
+          onSelectionChanged={onSelectionChanged}
+          onCellFocused={onCellFocused}
+          popupParent={POPUP_PARENT}
           domLayout="normal"
         />
       </div>
-      <CellInspector focused={focused} rowsById={rowsById} flagMap={flagMap} />
       <div className="review__foot">
-        <Button size="sm" variant="danger" disabled={!selectedId || status === "sending"} onClick={() => setRemoving(selectedId)}>
-          Remove selected row…
-        </Button>
-        <span className="subtle">Removed rows stay listed on the Notes sheet with your reason.</span>
+        <CellInspector focused={focused} rowsById={rowsById} flagMap={flagMap} />
+        <div className="review__legend subtle">
+          <span><i className="swatch swatch--missing" /> missing</span>
+          <span><i className="swatch swatch--suspicious" /> check</span>
+          <span><i className="swatch swatch--manual" /> edited</span>
+          <span title="Double-click a cell (or press Enter) to edit; columns with a list open a dropdown. Ctrl+Z undoes. The ⋯ button at the end of a row removes it.">
+            Double-click to edit · ⋯ row menu
+          </span>
+        </div>
       </div>
       {removing && (
         <Modal
-          title={`Remove ${removing} from the RFQ`}
+          title={removing.length === 1 ? `Remove ${removing[0]} from the RFQ` : `Remove ${removing.length} rows from the RFQ`}
           onClose={() => setRemoving(null)}
           footer={
             <>
               <Button variant="ghost" onClick={() => setRemoving(null)}>
                 Cancel
               </Button>
-              <Button
-                variant="danger"
-                disabled={removeReason.trim().length < 3}
-                busy={patch.isPending}
-                onClick={() =>
-                  patch.mutate(
-                    { version: data.version, edits: [], remove_rows: [{ product_id: removing, reason: removeReason.trim() }] },
-                    {
-                      onSuccess: () => {
-                        setRemoving(null);
-                        setRemoveReason("");
-                        toast(`${removing} removed`, "success");
-                      },
-                      onError: (e) => toast(e.message, "error"),
-                    },
-                  )
-                }
-              >
-                Remove row
+              <Button variant="danger" disabled={removeReason.trim().length < 3 || locked} busy={patch.isPending} busyLabel="Removing…"
+                      onClick={() => removeRows(removing)}>
+                {removing.length === 1 ? "Remove row" : `Remove ${removing.length} rows`}
               </Button>
             </>
           }
         >
+          {removing.length > 1 && (
+            <p className="remove-list">
+              {removing.map((id) => (
+                <span key={id} className="mono">{id}</span>
+              ))}
+            </p>
+          )}
+          {removeAll && <div className="alert alert--warning">This removes every product: the RFQ will be empty.</div>}
+          <p className="subtle">
+            The whole row leaves the RFQ sheet (all its values and sources). The product ID and your reason stay on the Notes sheet
+            and in the activity log, so nothing disappears silently.
+          </p>
           <Field label="Reason (required)" htmlFor="rm-reason" hint="For example: customer dropped the item, duplicate of another line.">
-            <input id="rm-reason" className="input" value={removeReason} onChange={(e) => setRemoveReason(e.target.value)} maxLength={300} />
+            <input id="rm-reason" className="input" value={removeReason} onChange={(e) => setRemoveReason(e.target.value)} maxLength={300}
+                   onKeyDown={(e) => e.key === "Enter" && removeReason.trim().length >= 3 && !patch.isPending && removeRows(removing)} />
           </Field>
         </Modal>
       )}
     </div>
+  );
+}
+
+interface RowActionsProps {
+  row: SheetRow | undefined;
+  disabled: boolean;
+  onRemove: () => void;
+}
+
+/** The ⋯ menu at the end of every row. */
+function RowActions({ row, disabled, onRemove }: RowActionsProps) {
+  if (!row) return null;
+  const page = row.supplier["Product page"]?.value || Object.values(row.cells).find((c) => c.url?.includes("ferguson.com/product"))?.url;
+  const spec = row.supplier["Spec sheet"]?.value;
+  return (
+    <Menu
+      variant="icon"
+      ariaLabel={`Actions for ${row.product_id}`}
+      label={<DotsIcon />}
+      width={230}
+      sections={[
+        {
+          title: row.product_id,
+          items: [
+            ...(isSafeUrl(page) ? [{ key: "page", label: "Open product page", href: page, title: page }] : []),
+            ...(isSafeUrl(spec) ? [{ key: "spec", label: "Open spec sheet", href: spec, title: spec }] : []),
+            { key: "remove", label: "Remove row…", description: "Kept on the Notes sheet with your reason", danger: true, disabled, onSelect: onRemove },
+          ],
+        },
+      ]}
+    />
+  );
+}
+
+function DotsIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+      <circle cx="3" cy="8" r="1.5" fill="currentColor" />
+      <circle cx="8" cy="8" r="1.5" fill="currentColor" />
+      <circle cx="13" cy="8" r="1.5" fill="currentColor" />
+    </svg>
   );
 }
 
@@ -429,8 +634,8 @@ interface InspectorProps {
 
 /** Shows where the selected cell's value came from, with a working link to that page or PDF. */
 function CellInspector({ focused, rowsById, flagMap }: InspectorProps) {
-  if (!focused) return <div className="inspector subtle">Click a cell to see its source and link.</div>;
-  const row = rowsById.get(focused.pid);
+  const row = focused ? rowsById.get(focused.pid) : undefined;
+  if (!focused || !row) return <div className="inspector subtle">Click a cell to see its source and link.</div>;
   const cell = row?.cells[focused.col];
   const flags = flagMap.get(`${focused.pid}|${focused.col}`) ?? [];
   return (

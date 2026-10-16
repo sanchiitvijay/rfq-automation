@@ -5,6 +5,7 @@ export { Button } from "./Button";
 export { Card } from "./Card";
 export { EmptyState } from "./EmptyState";
 export { Field } from "./Field";
+export { Menu, type MenuItem, type MenuSection } from "./Menu";
 export { Modal } from "./Modal";
 export { Pagination } from "./Pagination";
 export { ProgressBar } from "./ProgressBar";

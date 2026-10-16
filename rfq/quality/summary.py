@@ -8,13 +8,14 @@ from openpyxl.styles import Font, PatternFill
 from openpyxl.worksheet.worksheet import Worksheet
 
 from rfq.config import STATUS_NOT_FOUND
+from rfq.excel.palette import COLOURS, LEGEND as PALETTE_LEGEND
 from rfq.models import QualityReport, Sheet
 
 TITLE = Font(bold=True, size=14, color="0A2433")
 SECTION = Font(bold=True, size=12, color="00446A")
 BOLD = Font(bold=True)
 HEAD_FILL = PatternFill("solid", fgColor="F0F3F5")
-LEGEND = {"missing": "D9D9D9", "suspicious": "F8CBAD", "not_found": "FBE2D5"}
+LEGEND = {k: COLOURS[k][0] for k in ("missing", "suspicious", "not_found")}  # flag type → fill
 
 
 class _Writer:
@@ -114,9 +115,10 @@ def write_summary(wb: Workbook, sheet: Sheet, report: QualityReport, email_info:
                fill=None)
         ws.cell(row=w.r - 1, column=4).fill = PatternFill("solid", fgColor=LEGEND[f.type])
 
-    w.section("Legend")
-    for name, color in LEGEND.items():
-        w.line(name.replace("_", " "), fill=PatternFill("solid", fgColor=color))
+    w.section("Colours used in this workbook")
+    for name in PALETTE_LEGEND:
+        fill, text, meaning = COLOURS[name]
+        w.line(meaning, font=Font(color=text) if text else None, fill=PatternFill("solid", fgColor=fill))
 
     for col, width in {"A": 34, "B": 22, "C": 40, "D": 60, "E": 50, "F": 80}.items():
         ws.column_dimensions[col].width = width

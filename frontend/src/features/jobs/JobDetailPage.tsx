@@ -1,11 +1,11 @@
 import { lazy, Suspense, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { apiUrl } from "../../api/client";
 import { useLiveUpdates } from "../../api/events";
 import { useDeleteJob, useJob, useRetry } from "../../api/hooks";
-import { Button, Card, EmptyState, ProgressBar, Tabs, useToast } from "../../components/ui";
+import { Button, Card, EmptyState, Menu, ProgressBar, Tabs, useToast, type MenuItem } from "../../components/ui";
 import { formatTime } from "../../lib/format";
 import { ImportDialog } from "../review/ImportDialog";
+import { DownloadMenu } from "./DownloadMenu";
 import { SendDialog } from "../send/SendDialog";
 import { ActivityLog } from "./ActivityLog";
 import { EmailPane } from "./EmailPane";
@@ -20,6 +20,15 @@ import "./detail.css";
 const ReviewGrid = lazy(() => import("../review/ReviewGrid")); // the grid bundle loads only when needed
 
 type Tab = "summary" | "review" | "sources" | "flags" | "activity";
+const EMAIL_PREF = "rfq.showEmail";
+
+function readPref(): boolean {
+  try {
+    return localStorage.getItem(EMAIL_PREF) !== "0";
+  } catch {
+    return true; // storage blocked (private window): just show the email
+  }
+}
 
 export function JobDetailPage() {
   const { jobId = "" } = useParams();
@@ -33,6 +42,15 @@ export function JobDetailPage() {
   const labels = useLabels();
   const [sending, setSending] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [showEmail, setShowEmailState] = useState(readPref);
+  const setShowEmail = (v: boolean) => {
+    setShowEmailState(v);
+    try {
+      localStorage.setItem(EMAIL_PREF, v ? "1" : "0");
+    } catch {
+      /* not remembered; fine */
+    }
+  };
 
   if (job.isLoading) return <p className="muted">Loading…</p>;
   if (job.isError || !job.data) {
@@ -49,6 +67,25 @@ export function JobDetailPage() {
   const flags = j.report?.flags ?? [];
   const lastReview = [...j.events].reverse().find((e) => e.phase === "Reviewed" || e.phase === "Review reopened");
   const reviewedBy = lastReview?.phase === "Reviewed" ? `${lastReview.message} · ${formatTime(lastReview.ts)}` : undefined;
+  const moreItems: MenuItem[] = [
+    ...(hasSheet
+      ? [{ key: "import", label: "Upload edited file…", description: ".xlsx, .xls or .csv; checked before anything changes", disabled: j.status === "sending", onSelect: () => setImporting(true) }]
+      : []),
+    { key: "email", label: showEmail ? "Hide the email" : "Show the email", description: "More room for the RFQ", onSelect: () => setShowEmail(!showEmail) },
+    ...(!active && j.status !== "sending"
+      ? [{
+          key: "delete",
+          label: "Delete request…",
+          description: "The email and every RFQ version",
+          danger: true,
+          onSelect: () => {
+            if (window.confirm("Delete this request, its email and all RFQ versions? This cannot be undone.")) {
+              del.mutate(j.id, { onSuccess: () => navigate("/"), onError: (e) => toast(e.message, "error") });
+            }
+          },
+        }]
+      : []),
+  ];
 
   return (
     <>
@@ -64,21 +101,7 @@ export function JobDetailPage() {
         </div>
         <div className="detail-actions">
           <StatusBadge status={j.status} />
-          {hasSheet && (
-            <a className="btn btn--secondary" href={apiUrl(`/api/jobs/${j.id}/rfq.xlsx`)} download>
-              Download RFQ{j.version > 1 ? ` v${j.version}` : ""}
-            </a>
-          )}
-          {hasSheet && (
-            <a className="btn btn--ghost" href={apiUrl(`/api/jobs/${j.id}/summary.xlsx`)} download title="Fill rates, what was not found and why, and every flag">
-              Download summary
-            </a>
-          )}
-          {hasSheet && (
-            <Button disabled={j.status === "sending"} onClick={() => setImporting(true)}>
-              Upload edited Excel
-            </Button>
-          )}
+          {hasSheet && <DownloadMenu jobId={j.id} version={j.version} />}
           {hasSheet && (
             <Button variant="primary" disabled={j.status === "sending"} onClick={() => setSending(true)}>
               {j.status === "sent" ? "Send again…" : "Send to POC…"}
@@ -89,18 +112,7 @@ export function JobDetailPage() {
               Retry
             </Button>
           )}
-          {!active && j.status !== "sending" && (
-            <Button
-              variant="ghost"
-              onClick={() => {
-                if (window.confirm("Delete this request, its email and all RFQ versions? This cannot be undone.")) {
-                  del.mutate(j.id, { onSuccess: () => navigate("/"), onError: (e) => toast(e.message, "error") });
-                }
-              }}
-            >
-              Delete
-            </Button>
-          )}
+          {moreItems.length > 0 && <Menu label="More" variant="ghost" width={260} sections={[{ items: moreItems }]} />}
         </div>
       </div>
 
@@ -126,8 +138,8 @@ export function JobDetailPage() {
       {j.status === "sending" && <div className="alert alert--info">Sending the RFQ… this page updates when it is delivered.</div>}
       {j.error && j.status !== "failed" && <div className="alert alert--error">{j.error}</div>}
 
-      <div className="detail-grid">
-        <EmailPane job={j} />
+      <div className={`detail-grid ${showEmail ? "" : "detail-grid--wide"}`}>
+        {showEmail && <EmailPane job={j} onHide={() => setShowEmail(false)} />}
         <Card
           className="detail-main"
           title={
@@ -142,6 +154,13 @@ export function JobDetailPage() {
                 { id: "activity", label: "Activity" },
               ]}
             />
+          }
+          actions={
+            !showEmail ? (
+              <Button size="sm" variant="ghost" onClick={() => setShowEmail(true)}>
+                Show email
+              </Button>
+            ) : undefined
           }
         >
           {!hasSheet ? (

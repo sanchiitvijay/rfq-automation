@@ -63,8 +63,9 @@
 
   --radius-sm: 2px;
   --radius-md: 3px;
+  --page-width: 1600px;
   --border: 1px solid var(--color-border);
   --focus-ring: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-primary);
-  --utility-height: 32px;
-  --header-height: 60px;
+  --utility-height: 28px;
+  --header-height: 52px;
 }

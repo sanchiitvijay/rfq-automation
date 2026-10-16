@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app import events
@@ -17,7 +17,11 @@ from backend.app.models import Job
 from backend.app.schemas import CreateJob
 from backend.app.services import jobs as svc
 from backend.app.services import search
+from rfq.config import RunOptions
+from rfq.excel import exports
+from rfq.excel.reader import read as read_workbook
 from rfq.excel.writer import render_summary_bytes
+from rfq.quality.agent import run_quality
 from backend.app.settings import get_settings
 from rfq.models import QualityReport, Sheet
 from rfq.reply import build_reply
@@ -145,27 +149,48 @@ async def delete_job(job: Job = Depends(load_job), session: AsyncSession = Depen
     return Response(status_code=204)
 
 
-@router.get("/{job_id}/rfq.xlsx")
-async def download_xlsx(version: int | None = None, job: Job = Depends(load_job)) -> FileResponse:
+async def _export(job: Job, what: str, fmt: str, version: int | None) -> Response:
+    if not job.sheet:
+        raise HTTPException(404, "the RFQ is not ready yet")
     v = version or job.version
     path = svc.xlsx_path(job.id, v)
-    if v < 1 or not path.exists():
-        raise HTTPException(404, "no RFQ file for this version yet")
-    return FileResponse(path, filename="RFQ.xlsx" if v == 1 else f"RFQ_v{v}.xlsx",
-                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    if v < 1 or v > job.version or not path.exists():
+        raise HTTPException(404, f"no RFQ file for version {v}")
+    if v == job.version:
+        sheet = Sheet.from_dict(job.sheet)
+        report = QualityReport.from_dict(job.report) if job.report else QualityReport()
+    else:  # an older version: rebuild from exactly the file that was downloadable then
+        sheet = await asyncio.to_thread(read_workbook, path)
+        report = await run_quality(sheet, RunOptions(), llm=False)
+    info = {"subject": job.subject, "sender": job.sender}
+    rfq_bytes = await asyncio.to_thread(path.read_bytes)
+    summary_bytes = await asyncio.to_thread(render_summary_bytes, sheet, report, info)
+    try:
+        data, f = await asyncio.to_thread(exports.export, what, fmt, rfq_xlsx=rfq_bytes, summary_xlsx=summary_bytes,
+                                          sheet=sheet, report=report)
+    except exports.ExportError as e:
+        raise HTTPException(422, str(e)) from e
+    base = "RFQ" if what == "rfq" else "RFQ_summary"
+    name = f"{base}{'' if v == 1 else f'_v{v}'}{f.extension}"
+    return Response(data, media_type=f.media_type, headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@router.get("/{job_id}/export")
+async def export_job(what: str = Query("rfq", pattern="^(rfq|summary)$"), format: str = Query("xlsx", max_length=10),
+                     version: int | None = Query(None, ge=1), job: Job = Depends(load_job)) -> Response:
+    """Download the RFQ or the Summary as .xlsx, .xls or .csv (see GET /api/exports/formats)."""
+    return await _export(job, what, format, version)
+
+
+@router.get("/{job_id}/rfq.xlsx")
+async def download_xlsx(version: int | None = Query(None, ge=1), job: Job = Depends(load_job)) -> Response:
+    return await _export(job, "rfq", "xlsx", version)
 
 
 @router.get("/{job_id}/summary.xlsx")
 async def download_summary(job: Job = Depends(load_job)) -> Response:
     """The Summary sheet on its own (fill rates, not-found list, flags) plus the Notes, for the current version."""
-    if not job.sheet:
-        raise HTTPException(404, "no summary yet")
-    report = QualityReport.from_dict(job.report) if job.report else QualityReport()
-    data = await asyncio.to_thread(render_summary_bytes, Sheet.from_dict(job.sheet), report,
-                                   {"subject": job.subject, "sender": job.sender})
-    name = "RFQ_summary.xlsx" if job.version <= 1 else f"RFQ_summary_v{job.version}.xlsx"
-    return Response(data, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+    return await _export(job, "summary", "xlsx", None)
 
 
 @router.get("/{job_id}/reply.eml")

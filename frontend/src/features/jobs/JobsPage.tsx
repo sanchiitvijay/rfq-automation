@@ -27,7 +27,7 @@ export function JobsPage() {
       <div className="page-head">
         <div>
           <h1>RFQ requests</h1>
-          <p className="muted">Emails sent from Gmail, pasted or uploaded. Each runs on its own worker; nothing waits in line behind another request.</p>
+          <p className="muted">Emails from Gmail, pasted or uploaded. Each one runs on its own worker.</p>
         </div>
         {!showNew && (
           <Button variant="primary" onClick={() => setShowNew(true)}>

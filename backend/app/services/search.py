@@ -30,6 +30,8 @@ PAGE_SIZES = (10, 25, 50, 100)
 DEFAULT_PAGE_SIZE = 25
 MAX_TEXT = 200
 SUGGEST_LIMIT = 8
+# "Received" dropdown: days back from today (0 = today only). Custom dates stay possible.
+DATE_PRESETS = (("today", "Today", 0), ("7d", "Last 7 days", 6), ("30d", "Last 30 days", 29), ("90d", "Last 90 days", 89))
 FIELD_LABELS = {"q": "Anything", "product": "Product ID", "subject": "Subject", "sender": "Sender"}
 
 
@@ -149,6 +151,7 @@ async def facets(session: AsyncSession) -> dict[str, Any]:
         "received": {"first": first, "last": last},
         "max_text": MAX_TEXT,
         "fields": [{"value": k, "label": v} for k, v in FIELD_LABELS.items()],
+        "date_presets": [{"value": k, "label": label, "days": days} for k, label, days in DATE_PRESETS],
     }
 
 

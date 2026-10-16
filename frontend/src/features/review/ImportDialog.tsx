@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { ApiError } from "../../api/client";
-import { useImportPreview, usePatchSheet } from "../../api/hooks";
+import { useExportFormats, useImportPreview, usePatchSheet } from "../../api/hooks";
 import type { ImportChange, ImportPreview } from "../../api/types";
 import { Badge, Button, Field, Modal, useToast } from "../../components/ui";
 import "./import.css";
@@ -23,6 +23,9 @@ export function ImportDialog({ jobId, onClose }: { jobId: string; onClose: () =>
   const check = useImportPreview(jobId);
   const patch = usePatchSheet(jobId);
   const toast = useToast();
+  const formats = useExportFormats();
+  const accept = formats.data?.upload.accept ?? ".xlsx,.xlsm,.xls,.csv";
+  const acceptLabel = formats.data?.upload.label ?? "Excel or CSV";
   const [result, setResult] = useState<ImportPreview | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [note, setNote] = useState("");
@@ -44,7 +47,7 @@ export function ImportDialog({ jobId, onClose }: { jobId: string; onClose: () =>
 
   const apply = () => {
     if (!result) return;
-    const source = `Uploaded Excel '${result.filename}'${note.trim() ? `: ${note.trim()}` : ""}`;
+    const source = `Uploaded file '${result.filename}'${note.trim() ? `: ${note.trim()}` : ""}`;
     patch.mutate(
       {
         version: result.current_version,
@@ -75,7 +78,7 @@ export function ImportDialog({ jobId, onClose }: { jobId: string; onClose: () =>
 
   return (
     <Modal
-      title="Upload edited Excel"
+      title="Upload edited file"
       onClose={onClose}
       footer={
         <>
@@ -91,14 +94,14 @@ export function ImportDialog({ jobId, onClose }: { jobId: string; onClose: () =>
       }
     >
       <p className="muted">
-        Upload the RFQ workbook you downloaded and edited. Nothing changes until you review the differences and click
-        Apply. Only the RFQ sheet is read.
+        Upload the RFQ you downloaded and edited: {acceptLabel}. Nothing changes until you review the differences and
+        click Apply. Only the RFQ sheet (or the CSV's single sheet) is read.
       </p>
       <div>
         <input
           ref={fileRef}
           type="file"
-          accept=".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          accept={accept}
           className="visually-hidden"
           onChange={(e) => {
             const f = e.target.files?.[0];
@@ -107,7 +110,7 @@ export function ImportDialog({ jobId, onClose }: { jobId: string; onClose: () =>
           }}
         />
         <Button busy={check.isPending} busyLabel="Checking the file…" onClick={() => fileRef.current?.click()}>
-          {result ? "Choose another file" : "Choose .xlsx file"}
+          {result ? "Choose another file" : "Choose file"}
         </Button>
         {result && <span className="subtle"> {result.filename}{result.file_version ? ` · downloaded at version ${result.file_version}` : ""}</span>}
       </div>
@@ -172,7 +175,7 @@ export function ImportDialog({ jobId, onClose }: { jobId: string; onClose: () =>
               </tbody>
             </table>
           </div>
-          <Field label="Source note (optional)" htmlFor="import-note" hint={`Saved with every applied value after "Uploaded Excel '${result.filename}'", e.g. "supplier quote 16 Oct".`}>
+          <Field label="Source note (optional)" htmlFor="import-note" hint={`Saved with every applied value after "Uploaded file '${result.filename}'", e.g. "supplier quote 16 Oct".`}>
             <input id="import-note" className="input" value={note} onChange={(e) => setNote(e.target.value)} maxLength={200} />
           </Field>
         </>

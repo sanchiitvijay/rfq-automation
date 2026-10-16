@@ -1,7 +1,7 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "./client";
 import type {
-  CellEdit, Facets, Health, ImportPreview, JobDetail, JobFilters, JobPage, JobSend, JobSummary, SheetData, Suggestion,
+  CellEdit, ExportFormats, Facets, Health, ImportPreview, JobDetail, JobFilters, JobPage, JobSend, JobSummary, SheetData, Suggestion,
 } from "./types";
 
 export const keys = {
@@ -183,4 +183,8 @@ export function useDeleteJob() {
     mutationFn: (id: string) => api<void>(`/api/jobs/${id}`, { method: "DELETE" }),
     onSuccess: () => qc.invalidateQueries({ queryKey: keys.jobs }),
   });
+}
+
+export function useExportFormats() {
+  return useQuery({ queryKey: ["export-formats"], queryFn: () => api<ExportFormats>("/api/exports/formats"), staleTime: Infinity });
 }

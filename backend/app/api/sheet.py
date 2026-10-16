@@ -14,7 +14,7 @@ from backend.app.models import Job, JobEvent
 from backend.app.schemas import SheetPatch
 from backend.app.security import current_user
 from backend.app.services import jobs as svc
-from rfq.excel.importer import MAX_UPLOAD_BYTES, preview, read_meta
+from rfq.excel.importer import MAX_UPLOAD_BYTES, preview
 from rfq.excel.reader import read as read_workbook
 from rfq.models import Sheet
 from backend.app.services.sheet import (
@@ -57,7 +57,7 @@ async def import_sheet(file: UploadFile = File(...), job: Job = Depends(load_job
     data = await file.read(MAX_UPLOAD_BYTES + 1)
     current = Sheet.from_dict(job.sheet or {})
     base = None
-    meta_version = _meta_version(data)
+    meta_version = _meta_version(data, file.filename or "")
     if meta_version and meta_version != job.version:
         path = svc.xlsx_path(job.id, meta_version)
         if path.exists():
@@ -70,19 +70,13 @@ async def import_sheet(file: UploadFile = File(...), job: Job = Depends(load_job
     return result.to_dict()
 
 
-def _meta_version(data: bytes) -> int | None:
-    import io
-    import zipfile
+def _meta_version(data: bytes, filename: str) -> int | None:
+    """The version stamp in an uploaded workbook (.xlsx or .xls); CSV files never have one."""
+    from rfq.excel.importer import ImportPreview, load_table
 
-    from openpyxl import load_workbook
-
-    try:
-        wb = load_workbook(io.BytesIO(data), read_only=True)
-        value = read_meta(wb).get("version", "")
-        wb.close()
-        return int(value) if value.isdigit() else None
-    except (zipfile.BadZipFile, KeyError, OSError, ValueError):
-        return None
+    loaded = load_table(data, filename, ImportPreview(ok=False, filename=filename))
+    value = loaded[0].get("version", "") if loaded else ""
+    return int(value) if value.isdigit() else None
 
 
 @router.post("/recheck")

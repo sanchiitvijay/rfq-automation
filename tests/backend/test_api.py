@@ -101,6 +101,32 @@ async def test_fill_not_found_and_remove_row(env):
     assert any("Removed from the RFQ by Tester: dropped" in n["note"] for n in d["notes"])
 
 
+async def test_editor_dropdowns_and_removing_several_rows(env):
+    client, queue, ctx, _ = env
+    jid = await make_job(client, queue, ctx)
+    sheet = (await client.get(f"/api/jobs/{jid}/sheet")).json()
+    opts = sheet["options"]
+    assert opts["UL Listed"] == {"choices": ["Yes", "No"]}
+    assert "Description" not in opts and "Picture" not in opts and "product_id" not in opts
+    # suggestions only hold values that pass validation (catalog "1000" without a unit is left out)
+    assert opts["Length"]["suggestions"] and all(v.endswith("ft") for v in opts["Length"]["suggestions"])
+    assert "Water" in opts["Application"]["suggestions"]  # single items of | lists are offered too
+    found = [r["product_id"] for r in sheet["rows"] if r["lookup_status"] == "Found"]
+    bad = await client.patch(f"/api/jobs/{jid}/sheet", json={"version": 1, "edits": [
+        {"product_id": found[0], "column": "UL Listed", "value": "Maybe", "note": ""}]})
+    assert bad.status_code == 422 and "Yes or No" in bad.json()["errors"][0]["error"]
+    r = await client.patch(f"/api/jobs/{jid}/sheet", json={"version": 1, "edits": [], "remove_rows": [
+        {"product_id": found[0], "reason": "dropped by customer"}, {"product_id": found[1], "reason": "dropped by customer"}]})
+    assert r.status_code == 200 and r.json()["version"] == 2
+    left = {x["product_id"] for x in r.json()["rows"]}
+    assert found[0] not in left and found[1] not in left and len(left) == len(sheet["rows"]) - 2
+    stale = await client.patch(f"/api/jobs/{jid}/sheet", json={"version": 1, "edits": [], "remove_rows": [
+        {"product_id": found[2], "reason": "again"}]})
+    assert stale.status_code == 409
+    facets = (await client.get("/api/jobs/facets")).json()
+    assert [d["value"] for d in facets["date_presets"]][:1] == ["today"] and all("days" in d for d in facets["date_presets"])
+
+
 async def test_send_flow(env):
     client, queue, ctx, sent = env
     jid = await make_job(client, queue, ctx)
@@ -402,3 +428,66 @@ async def test_timestamps_are_utc_aware(env):
     jid = await make_job(client, queue, ctx, name="email-1")
     d = (await client.get(f"/api/jobs/{jid}")).json()
     assert d["created_at"].endswith(("+00:00", "Z")) and d["events"][0]["ts"].endswith(("+00:00", "Z"))
+
+
+async def test_export_formats_and_downloads(env):
+    import csv
+    import io
+
+    import openpyxl
+    import xlrd
+
+    client, queue, ctx, _ = env
+    jid = await make_job(client, queue, ctx, name="email-3")
+    formats = (await client.get("/api/exports/formats")).json()
+    assert [f["value"] for f in formats["download"]] == ["xlsx", "xls", "csv"]
+    assert formats["upload"]["accept"] == ".xlsx,.xlsm,.xls,.csv"
+    for what in ("rfq", "summary"):
+        for fmt in ("xlsx", "xls", "csv"):
+            r = await client.get(f"/api/jobs/{jid}/export", params={"what": what, "format": fmt})
+            assert r.status_code == 200, (what, fmt, r.text)
+            name = r.headers["content-disposition"]
+            assert name.endswith(f'.{fmt}"') and ("RFQ_summary" in name) == (what == "summary")
+            if fmt == "xlsx":
+                wb = openpyxl.load_workbook(io.BytesIO(r.content))
+                assert wb.sheetnames[0] == ("RFQ" if what == "rfq" else "Summary")
+            elif fmt == "xls":
+                assert xlrd.open_workbook(file_contents=r.content).sheet_names()[0] == ("RFQ" if what == "rfq" else "Summary")
+            else:
+                rows = list(csv.reader(io.StringIO(r.content.decode("utf-8-sig"))))
+                assert rows[0][0] == ("product_id" if what == "rfq" else "RFQ quality summary")
+    assert (await client.get(f"/api/jobs/{jid}/export", params={"format": "pdf"})).status_code == 422
+    assert (await client.get(f"/api/jobs/{jid}/export", params={"what": "everything"})).status_code == 422
+    assert (await client.get(f"/api/jobs/{jid}/export", params={"version": 9})).status_code == 404
+    # an older version is exported from exactly its own file
+    await client.patch(f"/api/jobs/{jid}/sheet", json={"version": 1, "edits": [
+        {"product_id": "5106878", "column": "OSHA", "value": "OSHA 1926.956"}]})
+    old = await client.get(f"/api/jobs/{jid}/export", params={"format": "csv", "version": 1})
+    new = await client.get(f"/api/jobs/{jid}/export", params={"format": "csv"})
+    assert "OSHA 1926.956" not in old.content.decode("utf-8-sig") and "OSHA 1926.956" in new.content.decode("utf-8-sig")
+    assert '_v2.csv"' in new.headers["content-disposition"]
+
+
+async def test_upload_csv_and_xls_through_the_api(env):
+    import csv
+    import io
+
+    client, queue, ctx, _ = env
+    jid = await make_job(client, queue, ctx, name="email-1")
+    data = (await client.get(f"/api/jobs/{jid}/export", params={"format": "csv"})).content
+    rows = list(csv.reader(io.StringIO(data.decode("utf-8-sig"))))
+    oi = rows[0].index("OSHA")
+    for r in rows[1:]:
+        if r[0] == "5106912":
+            r[oi] = "OSHA 1926.956"
+    buf = io.StringIO()
+    csv.writer(buf).writerows(rows)
+    p = (await client.post(f"/api/jobs/{jid}/sheet/import",
+                           files={"file": ("RFQ.csv", buf.getvalue().encode(), "text/csv")})).json()
+    assert p["ok"] and p["counts"]["ok"] == 1 and p["file_version"] is None
+    xls = (await client.get(f"/api/jobs/{jid}/export", params={"format": "xls"})).content
+    p = (await client.post(f"/api/jobs/{jid}/sheet/import",
+                           files={"file": ("RFQ.xls", xls, "application/vnd.ms-excel")})).json()
+    assert p["ok"] and p["changes"] == [] and p["file_version"] == 1  # the .xls keeps the version stamp
+    bad = (await client.post(f"/api/jobs/{jid}/sheet/import", files={"file": ("RFQ.pdf", b"%PDF", "application/pdf")})).json()
+    assert not bad["ok"] and ".csv" in bad["errors"][0]

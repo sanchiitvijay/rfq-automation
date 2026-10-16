@@ -21,11 +21,19 @@ from rfq.config import (
 from rfq.excel.images import primary_picture
 from rfq.models import Cell, QualityReport, Sheet
 
-GREY = PatternFill("solid", fgColor="D9D9D9")  # missing
-ORANGE = PatternFill("solid", fgColor="F8CBAD")  # suspicious
-NOT_FOUND = PatternFill("solid", fgColor="FBE2D5")
-HEADER_FILL = PatternFill("solid", fgColor="06307F")
-HEADER_FONT = Font(bold=True, color="FFFFFF")
+from rfq.excel.palette import CONFIDENCE_COLOUR, STATUS_COLOUR, fill_of, text_of  # noqa: E402
+
+
+def _fill(name: str) -> PatternFill:
+    return PatternFill("solid", fgColor=fill_of(name))
+
+
+GREY = _fill("missing")
+ORANGE = _fill("suspicious")
+MANUAL = _fill("manual")
+NOT_FOUND = _fill("not_found")
+HEADER_FILL = _fill("header")
+HEADER_FONT = Font(bold=True, color=text_of("header"))
 SAFE_URL = re.compile(r"^https?://[^\s\"<>|]+$")
 LINK_FONT = Font(color="1379C8", underline="single")
 LINK_COLUMNS = {"Product page", "Spec sheet"}
@@ -135,6 +143,12 @@ def _fill_sources(ws: Worksheet, sheet: Sheet) -> None:
                                   start=1):
             _put(ws.cell(row=r, column=j), value)
         _link(ws.cell(row=r, column=7), cell.url)
+        conf = CONFIDENCE_COLOUR.get((cell.confidence or "").lower())
+        if conf:
+            ws.cell(row=r, column=5).fill = _fill(conf)
+            ws.cell(row=r, column=5).font = Font(color=text_of(conf))
+        if cell.source_type == "manual_edit":
+            ws.cell(row=r, column=4).fill = MANUAL
         r += 1
 
     for row in sheet.rows:
@@ -160,6 +174,7 @@ def _fill_supplier(ws: Worksheet, sheet: Sheet) -> None:
                 _put(target, row.product_id)
             elif column == "Lookup Status":
                 _put(target, row.lookup_status)
+                _status_style(target, row.lookup_status)
             elif column == "Found via":
                 _put(target, {"live": "ferguson.com page", "cache": "ferguson.com page (cached)",
                               "serpapi+catalog": "SerpApi + backup catalog", "serpapi": "SerpApi (Google)",
@@ -175,7 +190,8 @@ def _fill_supplier(ws: Worksheet, sheet: Sheet) -> None:
                     _put(target, cell.value)
         if row.lookup_status == STATUS_NOT_FOUND:
             for j in range(1, len(columns) + 1):
-                ws.cell(row=i, column=j).fill = NOT_FOUND
+                if columns[j - 1] != "Lookup Status":
+                    ws.cell(row=i, column=j).fill = NOT_FOUND
     note_row = len(sheet.rows) + 3
     _put(ws.cell(row=note_row, column=1), "Where each value comes from (with a link) is on the Sources sheet, "
                                           f"under '{SUPPLIER_PREFIX}<column>'. Catalog prices date from 2026-09-24.")
@@ -200,17 +216,44 @@ def _fill_notes(ws: Worksheet, sheet: Sheet) -> None:
     ws.column_dimensions["B"].width = 110
 
 
+def _status_style(cell: XlCell, status: str) -> None:
+    name = STATUS_COLOUR.get(status)
+    if name:
+        cell.fill = _fill(name)
+        cell.font = Font(bold=True, color=text_of(name))
+
+
+def _comment(cell: XlCell, text: str) -> None:
+    from openpyxl.comments import Comment
+
+    note = Comment(text[:1000], "RFQ Agent")
+    note.width, note.height = 320, 120
+    cell.comment = note
+
+
 def _highlight(ws: Worksheet, sheet: Sheet, report: QualityReport) -> None:
+    """Same colours as the web app. Order matters: edited-by-hand first, flags on top (a flag is more urgent)."""
     row_of = {r.product_id: i for i, r in enumerate(sheet.rows, start=2)}
+    for i, row in enumerate(sheet.rows, start=2):
+        for column, cell in row.cells.items():
+            if cell.source_type == "manual_edit" and column in RFQ_COLUMNS:
+                ws[f"{column_letter(column)}{i}"].fill = MANUAL
+        _status_style(ws[f"{column_letter('Lookup Status')}{i}"], row.lookup_status)
+    reasons: dict[str, list[str]] = {}
     for flag in report.flags:
         if flag.type == "not_found":
             i = row_of.get(flag.product_id)
             if i:
-                for j in range(1, len(RFQ_COLUMNS) + 1):
+                for j in range(1, len(RFQ_COLUMNS)):  # whole row except the coloured status cell
                     ws.cell(row=i, column=j).fill = NOT_FOUND
+                _comment(ws.cell(row=i, column=1), f"Not found: {flag.reason}")
             continue
-        fill = GREY if flag.type == "missing" else ORANGE
-        ws[flag.cell].fill = fill
+        ws[flag.cell].fill = GREY if flag.type == "missing" else ORANGE
+        if flag.type == "suspicious":
+            label = "AI check" if flag.check == "llm" else "Rule"
+            reasons.setdefault(flag.cell, []).append(f"{label}: {flag.reason}")
+    for ref, lines in reasons.items():  # hover the cell in Excel to read why it is orange
+        _comment(ws[ref], "\n".join(lines))
 
 
 META_SHEET = "_rfq_meta"
@@ -248,6 +291,9 @@ def render(sheet: Sheet, path: Path, report: QualityReport | None = None, email_
         other.sheet_view.tabSelected = other.title == "RFQ"
     wb.active = wb.sheetnames.index("RFQ")
     ws.freeze_panes = "C2"
+    for name in ("Sources", "Notes"):
+        if name in wb.sheetnames:
+            wb[name].freeze_panes = "A2"
     for column, width in {"A": 14, "B": 42, "R": 60, "U": 14, "V": 30}.items():
         ws.column_dimensions[column].width = width
     if embed_images:

@@ -1,0 +1,21 @@
+flowchart TB
+    subgraph R1[" "]
+        direction LR
+        E["📧 Email in<br/>Gmail extension · paste<br/>.eml · inbox bot"]:::step --> X["🔎 Find IDs<br/>body + Excel/CSV<br/>competitor codes"]:::step
+        X --> L
+        subgraph L["📚 Look up · first source that answers wins · every value keeps its source + link"]
+            direction LR
+            F1["1 · Ferguson<br/>API"]:::src --> F2["2 · SerpApi<br/>(Google)"]:::src --> F3["3 · ferguson.com<br/>page · 12/min"]:::src --> F4["4 · Backup<br/>catalog"]:::src
+        end
+    end
+    subgraph R2[" "]
+        direction LR
+        A["🤖 Quality Agent<br/>rules + GPT flags<br/>never overwrites"]:::arm --> H["👤 Review & edit<br/>web grid · upload<br/>.xlsx · .xls · .csv"]:::step --> O["📊 RFQ out<br/>Excel + Summary + Sources<br/>→ send to POC"]:::step
+    end
+    R1 --> R2
+    classDef step fill:#ffffff,stroke:#2C3F8E,stroke-width:2px,color:#1A2240,font-size:16px
+    classDef src fill:#EEF0FB,stroke:#2C3F8E,stroke-width:1px,color:#1A2240,font-size:15px
+    classDef arm fill:#E8F7FA,stroke:#5BC4D2,stroke-width:3px,color:#1A2240,font-size:16px
+    style L fill:#FAF7F1,stroke:#5BC4D2,stroke-width:2px,color:#2C3F8E
+    style R1 fill:none,stroke:none
+    style R2 fill:none,stroke:none

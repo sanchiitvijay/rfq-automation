@@ -15,6 +15,7 @@ from typing import Any
 from openpyxl import load_workbook
 
 from rfq.config import RFQ_COLUMNS, SPEC_COLUMNS
+from rfq.excel.exports import REVIEW_NOTES
 from rfq.models import Sheet
 from rfq.validation import EditError, validate
 
@@ -71,6 +72,89 @@ def _letter(index: int) -> str:
     return get_column_letter(index + 1)
 
 
+@dataclass
+class _Cell:
+    """One cell of any uploaded format: value, its A1 reference and its row number."""
+
+    value: Any
+    coordinate: str
+    row: int
+
+
+def _grid(values: list[list[Any]]) -> list[list[_Cell]]:
+    return [[_Cell(v, f"{_letter(j)}{i}", i) for j, v in enumerate(r)] for i, r in enumerate(values, start=1)]
+
+
+def _decode_csv(data: bytes) -> str:
+    for encoding in ("utf-8-sig", "cp1252"):  # Excel on Windows saves CSV as cp1252 unless told otherwise
+        try:
+            return data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("latin-1")
+
+
+def _uncsv(text: str) -> str:
+    """Undo the CSV-injection guard of our own export: '=x → =x is NOT restored (formulas stay text)."""
+    return text[1:] if text[:1] == "'" and text[1:2] in ("=", "+", "-", "@") else text
+
+
+def load_table(data: bytes, filename: str, result: ImportPreview) -> tuple[dict[str, str], list[list[_Cell]]] | None:
+    """The RFQ sheet of an .xlsx/.xlsm/.xls/.csv upload, plus the RFQ Agent version stamp if the file has one.
+    Problems are added to result.errors and None is returned."""
+    name = filename.lower()
+    if name.endswith((".xlsx", ".xlsm")):
+        try:
+            wb = load_workbook(io.BytesIO(data), data_only=False)  # formulas visible, so they can be refused
+        except (zipfile.BadZipFile, KeyError, OSError, ValueError) as e:
+            result.errors.append(f"The file could not be opened as an Excel workbook ({type(e).__name__}); "
+                                 "it may be corrupt or password protected.")
+            return None
+        if "RFQ" not in wb.sheetnames:
+            result.errors.append("The workbook has no sheet called 'RFQ'. Keep the sheet names as downloaded.")
+            return None
+        rows = [[_Cell(c.value, c.coordinate, c.row) for c in r] for r in wb["RFQ"].iter_rows()]
+        return read_meta(wb), rows
+    if name.endswith(".xls"):
+        import xlrd
+
+        try:
+            book = xlrd.open_workbook(file_contents=data)
+        except Exception as e:  # xlrd raises its own error types for encrypted / corrupt / not-really-xls files
+            result.errors.append(f"The file could not be opened as an Excel 97–2003 workbook ({type(e).__name__}); "
+                                 "it may be corrupt, password protected or not really an .xls file.")
+            return None
+        if "RFQ" not in book.sheet_names():
+            result.errors.append("The workbook has no sheet called 'RFQ'. Keep the sheet names as downloaded.")
+            return None
+        sheet = book.sheet_by_name("RFQ")
+        meta: dict[str, str] = {}
+        if META_SHEET in book.sheet_names():
+            m = book.sheet_by_name(META_SHEET)
+            meta = {_text(m.cell_value(i, 0)): _text(m.cell_value(i, 1)) for i in range(m.nrows) if m.ncols >= 2}
+        values = [[None if v == "" else v for v in sheet.row_values(i)] for i in range(sheet.nrows)]
+        return meta, _grid(values)
+    if name.endswith(".csv"):
+        import csv
+
+        text = _decode_csv(data)
+        if "\x00" in text:
+            result.errors.append("This does not look like a CSV text file.")
+            return None
+        try:
+            dialect = csv.Sniffer().sniff(text[:5000], delimiters=",;\t")
+        except csv.Error:
+            dialect = csv.excel  # one column or unusual file: plain commas
+        try:
+            values = [[_uncsv(v) if v != "" else None for v in r] for r in csv.reader(io.StringIO(text), dialect)]
+        except csv.Error as e:
+            result.errors.append(f"The CSV file could not be read ({e}).")
+            return None
+        return {}, _grid([r for r in values if any(v is not None for v in r)])
+    result.errors.append("Upload the RFQ as .xlsx, .xlsm, .xls or .csv. Other formats are not read.")
+    return None
+
+
 def read_meta(wb: Any) -> dict[str, str]:
     if META_SHEET not in wb.sheetnames:
         return {}
@@ -81,20 +165,14 @@ def preview(data: bytes, filename: str, job_id: str, current: Sheet, current_ver
             base: Sheet | None = None) -> ImportPreview:
     """`base` is the sheet at the version written in the file (when we still have it)."""
     result = ImportPreview(ok=False, filename=filename, current_version=current_version)
-    if not filename.lower().endswith((".xlsx", ".xlsm")):
-        result.errors.append("Upload the RFQ as an .xlsx file (Excel workbook). Other formats are not read.")
-        return result
     if len(data) > MAX_UPLOAD_BYTES:
         result.errors.append("The file is larger than 10 MB.")
         return result
-    try:
-        wb = load_workbook(io.BytesIO(data), data_only=False)  # formulas visible, so they can be refused
-    except (zipfile.BadZipFile, KeyError, OSError, ValueError) as e:
-        result.errors.append(f"The file could not be opened as an Excel workbook ({type(e).__name__}); "
-                             "it may be corrupt or password protected.")
+    loaded = load_table(data, filename, result)
+    if loaded is None:
         return result
+    meta, rows = loaded
 
-    meta = read_meta(wb)
     result.file_job_id = meta.get("job_id", "")
     if meta.get("version", "").isdigit():
         result.file_version = int(meta["version"])
@@ -103,18 +181,12 @@ def preview(data: bytes, filename: str, job_id: str, current: Sheet, current_ver
                              "upload it there.")
         return result
     if not meta:
-        result.warnings.append("The file has no RFQ Agent version stamp (it may have been re-saved as a new "
-                               "workbook), so it is compared with the current version only.")
+        result.warnings.append("The file has no RFQ Agent version stamp (CSV files never have one, and a re-saved "
+                               "workbook may lose it), so it is compared with the current version only.")
     elif result.file_version is not None and result.file_version < current_version:
         result.warnings.append(f"This file was downloaded at version {result.file_version}; the RFQ is now at "
                                f"version {current_version}. Cells changed by others since then are marked as "
                                "conflicts and are not applied unless you tick them.")
-    if "RFQ" not in wb.sheetnames:
-        result.errors.append("The workbook has no sheet called 'RFQ'. Keep the sheet names as downloaded.")
-        return result
-
-    ws = wb["RFQ"]
-    rows = list(ws.iter_rows())
     if not rows:
         result.errors.append("The RFQ sheet is empty.")
         return result
@@ -124,7 +196,7 @@ def preview(data: bytes, filename: str, job_id: str, current: Sheet, current_ver
         result.errors.append(f"The RFQ sheet is missing these columns: {', '.join(missing)}. Do not rename or "
                              "delete header cells.")
         return result
-    extra = [h for h in header if h and h not in RFQ_COLUMNS]
+    extra = [h for h in header if h and h not in RFQ_COLUMNS and h != REVIEW_NOTES]  # our own CSV column
     if extra:
         result.warnings.append(f"Extra columns are ignored: {', '.join(extra)}.")
     col_index = {name: header.index(name) for name in RFQ_COLUMNS}

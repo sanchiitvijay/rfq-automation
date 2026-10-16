@@ -71,6 +71,20 @@ async def unavailable(request: Request, exc: Exception) -> JSONResponse:
                                                             "Check that both are running."})
 
 
+@app.get("/api/exports/formats", dependencies=[Depends(require_key)])
+async def export_formats() -> dict:
+    """Download and upload formats offered by the web app (it builds its menus from this)."""
+    from rfq.excel.exports import FORMATS, UPLOAD_EXTENSIONS
+
+    return {
+        "download": [{"value": f.value, "label": f.label, "description": f.description, "extension": f.extension}
+                     for f in FORMATS.values()],
+        "downloads": [{"value": "rfq", "label": "RFQ"}, {"value": "summary", "label": "Summary"}],
+        "upload": {"extensions": list(UPLOAD_EXTENSIONS), "accept": ",".join(UPLOAD_EXTENSIONS),
+                   "label": "Excel (.xlsx, .xlsm, .xls) or CSV (.csv)"},
+    }
+
+
 @app.post("/api/mail/test", dependencies=[Depends(require_key)])
 async def test_mail() -> dict:
     """Logs in to the mail server with BOT_EMAIL / BOT_PASSWORD; never sends a message."""

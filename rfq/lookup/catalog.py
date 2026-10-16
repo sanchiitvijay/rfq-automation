@@ -116,3 +116,9 @@ def supplier(product_id: str) -> dict[str, Cell]:
     if spec:
         out["Spec sheet"] = Cell(spec, "spec_sheet", "high", "data/spec_sheet_links.csv", spec)
     return out
+
+
+def column_values(column: str) -> list[str]:
+    """Every distinct value the catalog holds for an RFQ column (for the editor's dropdown suggestions)."""
+    key = CATALOG_COLUMN_FOR.get(column, column)
+    return [v for v in (clean(r.get(key)) for r in _catalog().values()) if v]

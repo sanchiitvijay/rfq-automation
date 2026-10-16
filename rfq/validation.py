@@ -10,6 +10,9 @@ MAX_LEN = 2000
 _URL = re.compile(r"^https?://[^\s\"<>|]+$")
 PIPE_LIST_COLUMNS = {"Application", "ASTM", "Material", "Waterworks Application", "Product details"}
 READ_ONLY = {"product_id", "Lookup Status"}
+CHOICES = {"UL Listed": ("Yes", "No")}  # the only values these columns accept
+FREE_TEXT = {"Description", "Product details", "Image", "Picture"}  # no dropdown: each value is unique
+MAX_SUGGESTIONS = 40
 
 
 class EditError(ValueError):
@@ -46,11 +49,42 @@ def validate(column: str, value: str) -> str:
         return "|".join(parts)
     if column == "No of Tools" and not re.fullmatch(r"[1-9]\d{0,3}", value):
         raise EditError("enter a whole number, e.g. 1")
-    if column == "UL Listed" and value not in ("Yes", "No"):
-        raise EditError("enter Yes or No")
+    if column in CHOICES and value not in CHOICES[column]:
+        raise EditError(f"choose {' or '.join(CHOICES[column])}")
     if column in PIPE_LIST_COLUMNS:
         parts = [p.strip() for p in value.split("|")]
         if any(not p for p in parts):
             raise EditError("empty item in the list; separate items with a single |")
         return "|".join(parts)
     return value
+
+
+def column_options(seen: dict[str, list[str]]) -> dict[str, dict[str, list[str]]]:
+    """Dropdown options per editable column, for the review grid.
+
+    `choices` are the only accepted values; `suggestions` are values already used (in this RFQ or the catalog),
+    most common first, and only ones that would pass validation, so picking one can never be rejected.
+    Typing a new value stays possible for suggestion columns.
+    """
+    out: dict[str, dict[str, list[str]]] = {}
+    for column in SPEC_COLUMNS:
+        if column in READ_ONLY or column in FREE_TEXT:
+            continue
+        if column in CHOICES:
+            out[column] = {"choices": list(CHOICES[column])}
+            continue
+        counts: dict[str, int] = {}
+        for raw in seen.get(column, []):
+            try:
+                value = validate(column, raw)
+            except EditError:
+                continue
+            if not value:
+                continue
+            # list columns also offer each single item ("Water", "Gas"), so a new combination is easy to build
+            items = value.split("|") if column in PIPE_LIST_COLUMNS and "|" in value else []
+            for v in [value, *items]:
+                counts[v] = counts.get(v, 0) + 1
+        ranked = sorted(counts, key=lambda v: (-counts[v], v.lower()))
+        out[column] = {"suggestions": ranked[:MAX_SUGGESTIONS]}
+    return out

@@ -58,8 +58,11 @@ rfq/                      core flow (plain Python, used by CLI, worker and later
   excel/writer.py         render(sheet, path, report, email_info, meta, embed_images); Sources links;
                           Supplier sheet; hidden _rfq_meta; RFQ is first + active sheet; render_summary_bytes
   excel/reader.py         workbook → Sheet (quality agent CLI, base version for uploads)
-  excel/importer.py       preview of an uploaded edited workbook (three-way compare, validation)
+  excel/importer.py       preview of an uploaded edited file: load_table() for .xlsx/.xlsm/.xls/.csv,
+                          then three-way compare + validation (same rules for every format)
   excel/images.py         thumbnail prefetch to out/image_cache (Ferguson CDN only), primary_picture()
+  excel/palette.py        the ONE colour palette for .xlsx and .xls (matches the web app)
+  excel/exports.py        download formats: xlsx (master), xls (converted via xlwt), csv (+ Review notes)
   quality/                units.py, checks.py (code), llm_checks.py (OpenAI), summary.py, agent.py
   validation.py           rules for human edits (units, Yes/No, URLs incl. a|b lists, no formulas)
   eta.py                  Progress: phases, % and time left (EMA per work kind, rate-limit floor)
@@ -82,6 +85,8 @@ frontend/src/             api/ (client, hooks, events SSE+poll fallback, types),
                           theme/ (tokens), assets/ (real ferguson-light.svg logo + symbol)
 extension/                MV3: gmail.js (raw MIME via "Show original", DOM fallback), background.js, popup, options
 scripts/                  dev.sh (API+worker+web), chrome.sh (debug Chrome :9333), migrate_pg_to_sqlite.py
+docs/                     architecture.md (8 Mermaid diagrams), api.md, rfq-workbook.md, operations.md
+presentation/             Group 3 deck (HTML from the Agentic Fest template + PDF + slide images + architecture.mmd)
 tests/                    core tests + tests/backend (temp SQLite, fake queue, fake SMTP); fixtures/live/*.html.gz
 ```
 
@@ -94,7 +99,7 @@ SerpApi quota out / key rejected → Redis flag `serpapi:exhausted` for 1 h. `--
 
 ## Commands
 ```bash
-.venv/bin/python -m pytest -q tests                    # all tests (≈115, ~50 s); backend tests use a temp SQLite
+.venv/bin/python -m pytest -q tests                    # all tests (≈121, ~55 s); backend tests use a temp SQLite
 (cd frontend && npx tsc -p . && npx vite build)        # typecheck + build (TS 7, Vite 8 / Rolldown)
 scripts/chrome.sh                                      # debug Chrome on :9333 (profile ~/chrome-debug-profile)
 scripts/dev.sh                                         # API :8000, supervised worker, web :5173
@@ -141,12 +146,18 @@ Frontend reads `frontend/.env.local` (`VITE_API_URL`, `VITE_API_KEY`).
 - **openpyxl:** external text must be written as string cells (`data_type = "s"`; only our `=IMAGE()` is a
   formula). It cannot re-save a workbook it loaded with images; tests that re-save use `embed_images=False`.
   Excel 365 re-saves `IMAGE()` as `=_xlfn.IMAGE(...)`.
+- **Formats:** CSV can't carry colours or the version stamp; `.xls` can't carry pictures, links or comments.
+  Write CSV with a BOM and the `'` injection guard, and read it back with delimiter sniffing (`;` from European Excel)
+  and a cp1252 fallback. xlwt needs `cell_overwrite_ok=True` to rewrite a cell and has 0x21–0x3F custom colour slots.
 - **Quick Look doesn't render embedded drawings** and shows `=IMAGE()` as `0`. To see what a user sees, export
   via Numbers (`osascript … export doc … as PDF`) and quit Numbers afterwards.
 - **Frontend:** React `useId()` returns `:r1:` (invalid CSS id): strip colons. Use explicit `<label htmlFor>`;
   wrapping a `<select>` puts all option texts in its accessible name. AG Grid v36: register only the modules used
   (incl. `RowApiModule` for `getRowNode`); `tooltipValueGetter` is deprecated, use `tooltip`; columns are
-  virtualised (off-screen cells are not in the DOM; use the keyboard (End) in UI tests). React Query structural
+  virtualised (off-screen cells are not in the DOM; use the keyboard (End) in UI tests). Every prop passed to `<AgGridReact>` must keep
+  its identity between renders (module constants, `useCallback`, `useMemo`): an inline object/function makes the grid
+  refresh its rows and silently breaks double-click editing. Grid popups use `popupParent=document.body` (the grid is
+  only as tall as its rows). Dropdown options come from `GET /sheet` → `options`. React Query structural
   sharing returns the same object on refetch: restore rejected grid values with `node.setData`. Never let an
   older response overwrite newer data (`keepNewest`). Vite 8 rejects object `manualChunks`. After renaming files,
   restart the Vite dev server (stale module graph).
@@ -168,6 +179,15 @@ Always report honestly what was and wasn't verified (e.g. real SerpApi vs mocked
   `GET /api/jobs/facets` (don't hardcode statuses/sources in the UI); filters live in the URL.
 - Every change: update `README.md` (user-facing) and append to the implementation notes in `spec.md`.
 - Don't commit unless asked (nothing has been committed so far beyond the starter kit).
+
+## Docs, deck and how they were made
+- Keep `docs/` accurate to the code. The lookup diagram shows the Ferguson product API as a dashed plug-in point
+  (not implemented). The **deck** shows "Ferguson API → SerpApi → page → catalog" at the user's request, and slide 7
+  states that the Ferguson API step needs credentials. Keep that disclosure if the deck is edited.
+- Render or verify Mermaid in a **separate headless Chrome** (`p.chromium.launch(executable_path=<Google Chrome>,
+  headless=True)` + mermaid@11 from jsdelivr): the scraping Chrome on :9333 refused new browser contexts at one
+  point, and headless also gives clean screenshots/PDFs. The deck PDF = 2× screenshots of each slide (UI
+  button hidden) joined with Pillow.
 
 ## Status / not built yet
 Not built: the competitor finder (option 1), user accounts (one shared API key; editor name typed in the

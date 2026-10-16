@@ -1,6 +1,6 @@
 import { Fragment, useMemo } from "react";
 import type { JobDetail } from "../../api/types";
-import { Card } from "../../components/ui";
+import { Button, Card } from "../../components/ui";
 
 function escapeRe(s: string) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -10,7 +10,7 @@ function escapeRe(s: string) {
  * The email exactly as received, rendered as plain text (never as HTML, so nothing in the email can
  * run in the page), with every product token the agent picked up highlighted.
  */
-export function EmailPane({ job }: { job: JobDetail }) {
+export function EmailPane({ job, onHide }: { job: JobDetail; onHide?: () => void }) {
   const tokens = useMemo(() => [...new Set(job.items.map((i) => i.raw_token))].sort((a, b) => b.length - a.length), [job.items]);
   const parts = useMemo(() => {
     if (!tokens.length) return [job.email.body];
@@ -20,7 +20,11 @@ export function EmailPane({ job }: { job: JobDetail }) {
   const kind = useMemo(() => new Map(job.items.map((i) => [i.raw_token, i])), [job.items]);
 
   return (
-    <Card title="Email as received" className="email-pane">
+    <Card
+      title="Email as received"
+      className="email-pane"
+      actions={onHide && <Button size="sm" variant="ghost" onClick={onHide} title="Give the RFQ the full width">Hide</Button>}
+    >
       <dl className="email-meta">
         <dt>From</dt>
         <dd>{job.email.sender || <span className="subtle">unknown</span>}</dd>

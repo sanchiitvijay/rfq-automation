@@ -18,7 +18,8 @@ from rfq.pipeline import add_pictures
 from rfq.lookup.cache import Cache
 from rfq.models import Cell, QualityReport, Sheet
 from rfq.quality.agent import run_quality
-from rfq.validation import EditError, validate
+from rfq.lookup.catalog import column_values
+from rfq.validation import EditError, column_options, validate
 
 
 class Conflict(Exception):
@@ -39,10 +40,20 @@ def options() -> RunOptions:
                       embed_images=s.rfq_embed_images)
 
 
+def editor_options(rows: list[dict[str, Any]]) -> dict[str, dict[str, list[str]]]:
+    """Dropdown values for the grid: this RFQ's own values plus the catalog's (nothing hardcoded in the UI)."""
+    seen: dict[str, list[str]] = {}
+    for column in RFQ_COLUMNS:
+        values = [str(((r.get("cells") or {}).get(column) or {}).get("value") or "") for r in rows]
+        seen[column] = values + column_values(column)
+    return column_options(seen)
+
+
 def sheet_payload(job: Job) -> dict[str, Any]:
     sheet = job.sheet or {"rows": []}
-    return {"version": job.version, "status": job.status, "columns": RFQ_COLUMNS, "rows": sheet.get("rows", []),
-            "flags": (job.report or {}).get("flags", []), "report": job.report}
+    rows = sheet.get("rows", [])
+    return {"version": job.version, "status": job.status, "columns": RFQ_COLUMNS, "rows": rows,
+            "flags": (job.report or {}).get("flags", []), "report": job.report, "options": editor_options(rows)}
 
 
 def email_info(job: Job) -> dict[str, str]:

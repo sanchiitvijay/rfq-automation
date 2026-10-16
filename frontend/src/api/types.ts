@@ -116,6 +116,8 @@ export interface SheetData {
   flags: Flag[];
   report: QualityReport | null;
   incomplete: Incomplete;
+  /** dropdown values per editable column: choices = the only allowed values, suggestions = values in use */
+  options: Record<string, { choices?: string[]; suggestions?: string[] }>;
 }
 
 export interface CellEdit {
@@ -194,6 +196,7 @@ export interface Facets {
   received: { first: string | null; last: string | null };
   max_text: number;
   fields: FacetOption[];
+  date_presets: { value: string; label: string; days: number }[];
 }
 
 export interface Suggestion {
@@ -216,4 +219,10 @@ export interface JobFilters {
   sort: string;
   page: string;
   size: string;
+}
+
+export interface ExportFormats {
+  download: { value: string; label: string; description: string; extension: string }[];
+  downloads: { value: string; label: string }[];
+  upload: { extensions: string[]; accept: string; label: string };
 }

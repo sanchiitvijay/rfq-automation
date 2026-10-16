@@ -8,6 +8,13 @@ Turns an RFQ request email into a filled, sourced RFQ workbook, then lets the so
 
 Ground rules enforced everywhere: blank means unknown, every value has a row on the Sources sheet, nothing is guessed, and every requested ID stays on the sheet (as `Not found` when needed).
 
+## Documentation and presentation
+
+- [`docs/`](docs/README.md): [architecture with Mermaid diagrams](docs/architecture.md) (system, pipeline, lookup
+  fallbacks, Quality Agent, job lifecycle, sequences, data model, guardrails), [API reference](docs/api.md),
+  [RFQ workbook](docs/rfq-workbook.md) and [operations](docs/operations.md).
+- [`presentation/`](presentation/README.md): the Group 3 Agentic Fest deck (HTML + PDF).
+
 ## Architecture
 
 ```
@@ -127,6 +134,9 @@ There is no captcha solving or fingerprint spoofing. When a lookup is blocked, t
 **Human in the loop.**
 - The RFQ is stored as one versioned document, and every save needs the current version: two people can't overwrite each other (409).
 - Typed values are validated: a number with its unit, Yes/No, URLs, no formulas. Each edit is saved with a `manual_edit` source row (who, when, the note) and goes into the edit log.
+- **Dropdowns in the grid:** columns with a fixed set of values (UL Listed: Yes / No) open a pick-list; the others (Color Finish, Application, Width, Thickness…) open a type-or-pick list of the values already used in this RFQ and the catalog. Only values that pass validation are offered, and list columns also offer single items ("Water", "Gas"). The options come from the server (`GET /sheet` → `options`), not from the UI.
+- **Removing rows:** the ⋯ menu at the end of each row (also: open the product page or spec sheet), or tick several rows and click **Remove N rows…**. A reason is required; the product ID and reason stay on the Notes sheet and in the activity log.
+- **Layout:** the review toolbar has a **Show** dropdown (all rows, rows with issues, missing, to check, not found, edited by hand, with counts); upload and delete live in **More** menus; the email panel can be hidden for a full-width grid; the requests list keeps search, status, received (Today / Last 7 / 30 / 90 days / custom) and sort on one line, with the other fields behind **More filters**.
 - The code checks re-run at once, and **Re-check with AI** re-runs the AI check. The workbook is regenerated as `RFQ_vN.xlsx`, and old versions stay downloadable.
 - **Send to POC**:
   - asks for the email address (pre-filled with the requester)
@@ -151,10 +161,17 @@ There is no captcha solving or fingerprint spoofing. When a lookup is blocked, t
 - Some catalog rows hold several picture addresses (`a|b`). The `_primary` one is shown and embedded, and the full value is kept.
 - Thumbnails come only from Ferguson's image CDN, with checks on type, a 3 MB size cap and a pixel cap, and are cached on disk. A picture that can't be fetched is listed in Notes, and the link remains.
 
-**Downloads.** **Download RFQ** gives the full workbook, opening on the RFQ sheet. **Download summary** gives `RFQ_summary.xlsx` with only the Summary and Notes.
+**Downloads (Download ▾ menu).** The RFQ and the Summary each come in three formats. The format list is served by `GET /api/exports/formats`; files come from `GET /api/jobs/{id}/export?what=rfq|summary&format=xlsx|xls|csv&version=`.
+- **`.xlsx`:** all sheets, opening on RFQ, with colours, embedded pictures, links and comments.
+- **`.xls` (Excel 97–2003):** converted from the `.xlsx`, so the values and colours are identical. No pictures (the Image cell holds the address), links or comments.
+- **`.csv`:** one sheet as plain values. A **Review notes** column lists each row's flags, since CSV has no colours. It has a UTF-8 BOM so Excel reads accents correctly, and cells starting with `=` `+` `@` get a `'` prefix against CSV formula injection.
+- **Older versions:** exported from exactly that version's file.
 
-**Upload an edited Excel.** Download the RFQ (it opens on the RFQ sheet), edit it in Excel, then click **Upload edited Excel**. Nothing is written until you click **Apply** in the preview.
-- **File checks:** it must be an .xlsx under 10 MB, contain an RFQ sheet with all the template columns, and belong to this RFQ (a hidden `_rfq_meta` sheet stores the job ID and version).
+**Colours (same as the web app; legend on the Summary sheet).** Grey = missing, orange = check this value, blue = edited by hand, tinted row = product not found. Lookup Status is green (Found), blue (Manual) or red (Not found), and the Sources confidence is green, amber or red. Every orange cell has an Excel **comment** with the reason. All colours come from one palette (`rfq/excel/palette.py`) shared by `.xlsx` and `.xls`.
+
+**Upload an edited file** (`.xlsx`, `.xlsm`, `.xls` or `.csv`). Edit a downloaded copy, then click **Upload edited file**. Nothing is written until you click **Apply** in the preview.
+- **File checks:** under 10 MB, an RFQ sheet (or the CSV's single sheet) with all the template columns, and it must belong to this RFQ. `.xlsx` and `.xls` carry a hidden `_rfq_meta` sheet with the job ID and version; CSV can't, so it is compared with the current version and the preview says so.
+- **CSV variations:** comma, semicolon or tab separators (European Excel saves with `;`), UTF-8 or Windows-1252, and our own `'` prefix are all handled.
 - **Three-way compare:** the file is compared with the version it was downloaded from. Cells someone else changed in the app since then are shown as conflicts and are not applied unless ticked.
 - **Per-cell checks:** the same rules as typing in the app (units, Yes/No, URLs, no formulas except `IMAGE()`, which Excel 365 re-saves as `_xlfn.IMAGE()`). Invalid cells are listed with the reason and never applied.
 - **Rows:** unknown products, duplicate rows and missing rows are reported, not silently applied. `product_id` and `Lookup Status` can't be changed this way.
@@ -171,7 +188,7 @@ There is no captcha solving or fingerprint spoofing. When a lookup is blocked, t
 
 ## Verification (what was run)
 
-- `pytest`: **115 passed** (backend tests run on a temporary SQLite file). Email 1 offline matches `reference/email-1 reference output.xlsx` cell by cell (RFQ sheet). The Sources sheet is identical too, plus one extra source row per product for `Description`, which the reference leaves unsourced. Emails 2–4 flag their not-found rows. The edge-case suite covers extraction, attachments, formula injection, lookup fallbacks, the Quality Agent with a failing or invalid AI answer, and the backend (auth, locking, validation, the send flow and its failures, recovery).
+- `pytest`: **121 passed** (backend tests run on a temporary SQLite file). Email 1 offline matches `reference/email-1 reference output.xlsx` cell by cell (RFQ sheet). The Sources sheet is identical too, plus one extra source row per product for `Description`, which the reference leaves unsourced. Emails 2–4 flag their not-found rows. The edge-case suite covers extraction, attachments, formula injection, lookup fallbacks, the Quality Agent with a failing or invalid AI answer, and the backend (auth, locking, validation, the send flow and its failures, recovery).
 - **Live, through Chrome on 9333**, all 4 emails. 225123 and 9677533 (not in the catalog) were found live. Pages without JSON-LD are handled. Three jobs ran at the same time with live progress over SSE.
 - **The AI check ran for real** with gpt-5-mini. It caught the Application-versus-Lettering contradiction in email 1 (5106891) and a "Non-Detectable" description with aluminium backing (9677531). Email 1 values were unchanged afterwards.
 - **Human-in-the-loop flow in the browser:**
